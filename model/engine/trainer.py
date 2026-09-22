@@ -29,6 +29,9 @@ class FocusedTrainerConfig:
     max_consecutive_failures: int = 3
     grad_clip_norm: float | None = None
     stage: str = "joint"
+    gradient_strategy: str = "sum"
+    gradnorm_alpha: float = 1.5
+    gradnorm_lr: float = 0.025
 
     def __post_init__(self) -> None:
         if self.precision not in {"bf16", "fp16", "fp32"}:
@@ -39,6 +42,14 @@ class FocusedTrainerConfig:
             raise ValueError("min_microbatch_size exceeds microbatch_size")
         if self.checkpoint_interval_sec <= 0 or self.max_consecutive_failures < 1:
             raise ValueError("checkpoint interval and failure limit must be positive")
+        if self.gradient_strategy not in {"sum", "pcgrad", "gradnorm"}:
+            raise ValueError("gradient_strategy must be sum, pcgrad, or gradnorm")
+        if self.gradient_strategy != "sum" and self.stage != "joint":
+            raise ValueError("task-gradient strategies require joint training")
+        if self.gradient_strategy != "sum" and self.precision == "fp16":
+            raise ValueError("task-gradient strategies currently require bf16 or fp32")
+        if self.gradnorm_alpha < 0 or self.gradnorm_lr <= 0:
+            raise ValueError("GradNorm alpha must be non-negative and its learning rate positive")
 
 
 class FocusedBatchAdapter:
@@ -187,6 +198,15 @@ class FocusedTrainer:
         self.last_step_losses: dict[str, float] = {}
         self.planned_steps: int | None = None
         self._progress_at: tuple[int, int] | None = None
+        self.last_gradient_stats: dict[str, float] = {}
+        self._gradnorm_weights: torch.nn.Parameter | None = None
+        self._gradnorm_optimizer: torch.optim.Optimizer | None = None
+        self._gradnorm_initial_losses: torch.Tensor | None = None
+        if config.gradient_strategy == "gradnorm":
+            self._gradnorm_weights = torch.nn.Parameter(torch.ones(2, device=self.device))
+            self._gradnorm_optimizer = torch.optim.Adam(
+                [self._gradnorm_weights], lr=config.gradnorm_lr
+            )
 
     @property
     def checkpoint_dir(self) -> Path:
@@ -227,23 +247,59 @@ class FocusedTrainer:
             "model_config": _model_config(self.model),
             "run_metadata": self.run_metadata,
             "planned_steps": self.planned_steps,
+            "gradient_strategy": self.config.gradient_strategy,
+            "gradnorm_weights": (
+                self._gradnorm_weights.detach().cpu()
+                if self._gradnorm_weights is not None else None
+            ),
+            "gradnorm_optimizer": (
+                self._gradnorm_optimizer.state_dict()
+                if self._gradnorm_optimizer is not None else None
+            ),
+            "gradnorm_initial_losses": (
+                self._gradnorm_initial_losses.detach().cpu()
+                if self._gradnorm_initial_losses is not None else None
+            ),
         }
+
+    def _optimizer_train(self) -> None:
+        switch = getattr(self.optimizer, "train", None)
+        if callable(switch):
+            switch()
+
+    def _optimizer_eval(self) -> None:
+        switch = getattr(self.optimizer, "eval", None)
+        if callable(switch):
+            switch()
+
+    def begin_evaluation(self) -> None:
+        """Expose evaluation weights for optimizers with distinct train/eval iterates."""
+        self._optimizer_eval()
+
+    def end_evaluation(self) -> None:
+        self._optimizer_train()
 
     def save_checkpoint(self) -> Path:
         """Publish a complete, clean optimizer-boundary state."""
         if self._unsafe_state:
             raise RuntimeError("optimizer state is uncertain; reload a normal checkpoint")
+        train_mode = bool(self.optimizer.param_groups[0].get("train_mode", False))
+        if train_mode:
+            self._optimizer_eval()
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
-        if self.latest_path.exists():
-            os.replace(self.latest_path, self.previous_path)
-            _fsync_directory(self.checkpoint_dir)
         try:
+            if self.latest_path.exists():
+                os.replace(self.latest_path, self.previous_path)
+                _fsync_directory(self.checkpoint_dir)
             _atomic_save(self._checkpoint_state(), self.latest_path)
         except BaseException:
             if not self.latest_path.exists() and self.previous_path.exists():
                 os.replace(self.previous_path, self.latest_path)
                 _fsync_directory(self.checkpoint_dir)
             raise
+        finally:
+            if train_mode:
+                self._optimizer_train()
         self._last_checkpoint_time = time.monotonic()
         self._last_saved_position = int(self.sampler.position)
         return self.latest_path
@@ -259,6 +315,8 @@ class FocusedTrainer:
             raise RuntimeError(f"unsupported focused checkpoint: {candidate}")
         if checkpoint["stage"] != self.config.stage or checkpoint["precision"] != self.config.precision:
             raise RuntimeError("checkpoint stage or precision differs from this training run")
+        if checkpoint.get("gradient_strategy", "sum") != self.config.gradient_strategy:
+            raise RuntimeError("checkpoint gradient strategy differs from this training run")
         self.model.load_state_dict(checkpoint["model"])
         self.optimizer.load_state_dict(checkpoint["optimizer"])
         self.criterion.load_state_dict(checkpoint.get("criterion", {}))
@@ -282,6 +340,17 @@ class FocusedTrainer:
         self.best_step = checkpoint["best_step"]
         self.run_metadata = dict(checkpoint.get("run_metadata") or {})
         self.planned_steps = checkpoint.get("planned_steps")
+        if self._gradnorm_weights is not None:
+            saved_weights = checkpoint.get("gradnorm_weights")
+            saved_optimizer = checkpoint.get("gradnorm_optimizer")
+            if saved_weights is None or saved_optimizer is None:
+                raise RuntimeError("checkpoint has no GradNorm state")
+            self._gradnorm_weights.data.copy_(saved_weights.to(self.device))
+            self._gradnorm_optimizer.load_state_dict(saved_optimizer)
+            initial_losses = checkpoint.get("gradnorm_initial_losses")
+            self._gradnorm_initial_losses = (
+                initial_losses.to(self.device) if initial_losses is not None else None
+            )
         if self.planned_steps is not None:
             self.planned_steps = int(self.planned_steps)
             self._set_progress(self.planned_steps)
@@ -336,7 +405,170 @@ class FocusedTrainer:
         dtype = {"bf16": torch.bfloat16, "fp16": torch.float16}.get(self.config.precision)
         return torch.autocast(device_type=self.device.type, dtype=dtype, enabled=dtype is not None)
 
+    def _optimizer_parameters(self) -> list[torch.nn.Parameter]:
+        parameters: list[torch.nn.Parameter] = []
+        seen: set[int] = set()
+        for group in self.optimizer.param_groups:
+            for parameter in group["params"]:
+                if id(parameter) not in seen:
+                    seen.add(id(parameter))
+                    parameters.append(parameter)
+        return parameters
+
+    @staticmethod
+    def _accumulate_gradients(
+        total: list[torch.Tensor | None], gradients: tuple[torch.Tensor | None, ...]
+    ) -> None:
+        for index, gradient in enumerate(gradients):
+            if gradient is None:
+                continue
+            detached = gradient.detach()
+            total[index] = detached if total[index] is None else total[index] + detached
+
+    @staticmethod
+    def _gradient_geometry(
+        first: list[torch.Tensor | None], second: list[torch.Tensor | None]
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        reference = next(
+            gradient for gradients in (first, second) for gradient in gradients
+            if gradient is not None
+        )
+        dot = torch.zeros((), device=reference.device, dtype=torch.float32)
+        first_sq = torch.zeros_like(dot)
+        second_sq = torch.zeros_like(dot)
+        for left, right in zip(first, second):
+            if left is None or right is None:
+                continue
+            left_float, right_float = left.float(), right.float()
+            dot += (left_float * right_float).sum()
+            first_sq += left_float.square().sum()
+            second_sq += right_float.square().sum()
+        return dot, first_sq, second_sq
+
+    def _assign_task_gradients(
+        self,
+        parameters: list[torch.nn.Parameter],
+        det_gradients: list[torch.Tensor | None],
+        road_gradients: list[torch.Tensor | None],
+        accumulated: dict[str, torch.Tensor],
+    ) -> None:
+        dot, det_sq, road_sq = self._gradient_geometry(det_gradients, road_gradients)
+        cosine = dot / (det_sq * road_sq).sqrt().clamp_min(1e-30)
+        self.last_gradient_stats = {
+            "task_cosine": float(cosine),
+            "det_grad_norm": float(det_sq.sqrt()),
+            "roadmark_grad_norm": float(road_sq.sqrt()),
+            "task_conflict": float(dot < 0),
+        }
+        if self.config.gradient_strategy == "pcgrad":
+            det_coefficient = torch.minimum(dot, torch.zeros_like(dot)) / road_sq.clamp_min(1e-30)
+            road_coefficient = torch.minimum(dot, torch.zeros_like(dot)) / det_sq.clamp_min(1e-30)
+            for parameter, det_gradient, road_gradient in zip(
+                parameters, det_gradients, road_gradients
+            ):
+                if det_gradient is None:
+                    parameter.grad = road_gradient
+                elif road_gradient is None:
+                    parameter.grad = det_gradient
+                else:
+                    parameter.grad = (
+                        det_gradient - det_coefficient * road_gradient
+                        + road_gradient - road_coefficient * det_gradient
+                    )
+            return
+
+        if self._gradnorm_weights is None or self._gradnorm_optimizer is None:
+            raise RuntimeError("GradNorm state is unavailable")
+        task_losses = torch.stack((
+            accumulated["det"],
+            accumulated["roadmark_bce"] + accumulated["roadmark_dice"],
+        )).to(self.device)
+        if self._gradnorm_initial_losses is None:
+            self._gradnorm_initial_losses = task_losses.detach().clamp_min(1e-12)
+        weights = self._gradnorm_weights.detach().clone()
+        for parameter, det_gradient, road_gradient in zip(
+            parameters, det_gradients, road_gradients
+        ):
+            if det_gradient is None:
+                parameter.grad = weights[1] * road_gradient
+            elif road_gradient is None:
+                parameter.grad = weights[0] * det_gradient
+            else:
+                parameter.grad = weights[0] * det_gradient + weights[1] * road_gradient
+
+        base_norms = torch.stack((det_sq.sqrt(), road_sq.sqrt())).detach()
+        weighted_norms = self._gradnorm_weights * base_norms
+        relative_rates = task_losses.detach() / self._gradnorm_initial_losses
+        inverse_rates = relative_rates / relative_rates.mean().clamp_min(1e-12)
+        targets = weighted_norms.detach().mean() * inverse_rates.pow(self.config.gradnorm_alpha)
+        gradnorm_loss = (weighted_norms - targets).abs().sum()
+        self._gradnorm_optimizer.zero_grad(set_to_none=True)
+        gradnorm_loss.backward()
+        self._gradnorm_optimizer.step()
+        with torch.no_grad():
+            self._gradnorm_weights.clamp_(min=1e-3)
+            self._gradnorm_weights.mul_(2.0 / self._gradnorm_weights.sum())
+        self.last_gradient_stats.update({
+            "det_task_weight": float(self._gradnorm_weights[0].detach()),
+            "roadmark_task_weight": float(self._gradnorm_weights[1].detach()),
+        })
+
+    def _attempt_task_gradient_update(self, batch: dict[str, Any], physical_size: int) -> bool:
+        sample_count = int(batch["image"].shape[0])
+        total_counts = self.batch_adapter.term_counts(batch)
+        if not total_counts.get("det") or not total_counts.get("roadmark_bce"):
+            self._last_failure_reason = "task_gradient_strategy_requires_both_tasks"
+            return False
+        parameters = self._optimizer_parameters()
+        det_gradients: list[torch.Tensor | None] = [None] * len(parameters)
+        road_gradients: list[torch.Tensor | None] = [None] * len(parameters)
+        accumulated: dict[str, torch.Tensor] = {}
+        for start in range(0, sample_count, physical_size):
+            stop = min(sample_count, start + physical_size)
+            micro_cpu = self.batch_adapter.slice_batch(batch, start, stop)
+            micro_counts = self.batch_adapter.term_counts(micro_cpu)
+            micro = self._to_device(micro_cpu)
+            with self._autocast():
+                outputs = self.model.forward_for_loss(micro["image"])
+            with torch.autocast(device_type=self.device.type, enabled=False):
+                losses = self.criterion(outputs, micro)
+                weighted_terms = self.batch_adapter.weighted_terms(losses, self.criterion)
+                scaled_terms = {
+                    key: term * (micro_counts[key] / total_counts[key] if total_counts[key] else 0.0)
+                    for key, term in weighted_terms.items()
+                }
+                det_loss = scaled_terms["det"]
+                road_loss = scaled_terms["roadmark_bce"] + scaled_terms["roadmark_dice"]
+            if not torch.isfinite(det_loss.detach() + road_loss.detach()).item():
+                self._last_failure_reason = "nonfinite_task_loss"
+                return False
+            for key, term in scaled_terms.items():
+                detached = term.detach()
+                accumulated[key] = accumulated[key] + detached if key in accumulated else detached
+            det_active = micro_counts["det"] > 0
+            road_active = micro_counts["roadmark_bce"] > 0
+            if det_active:
+                gradients = torch.autograd.grad(
+                    det_loss, parameters, retain_graph=road_active, allow_unused=True
+                )
+                self._accumulate_gradients(det_gradients, gradients)
+            if road_active:
+                gradients = torch.autograd.grad(road_loss, parameters, allow_unused=True)
+                self._accumulate_gradients(road_gradients, gradients)
+            del outputs, losses, weighted_terms, scaled_terms, det_loss, road_loss, micro
+        self._assign_task_gradients(parameters, det_gradients, road_gradients, accumulated)
+        values = torch.stack([accumulated[key] for key in accumulated]).float().cpu().tolist()
+        self.last_step_losses = dict(zip(accumulated, values))
+        self.last_step_losses["total"] = sum(values)
+        return True
+
     def _attempt_update(self, batch: dict[str, Any], physical_size: int) -> bool:
+        if self.config.gradient_strategy != "sum":
+            gradients_ready = self._attempt_task_gradient_update(batch, physical_size)
+            if not gradients_ready:
+                return False
+            parameters = [p for p in self._optimizer_parameters() if p.grad is not None]
+            return self._finish_optimizer_update(parameters)
         sample_count = int(batch["image"].shape[0])
         total_counts = self.batch_adapter.term_counts(batch)
         if not any(total_counts.values()):
@@ -376,7 +608,14 @@ class FocusedTrainer:
             del outputs, losses, weighted_terms, scaled_terms, loss, micro
         if self.scaler.is_enabled():
             self.scaler.unscale_(self.optimizer)
-        parameters = [p for group in self.optimizer.param_groups for p in group["params"] if p.grad is not None]
+        parameters = [p for p in self._optimizer_parameters() if p.grad is not None]
+        return self._finish_optimizer_update(parameters, accumulated)
+
+    def _finish_optimizer_update(
+        self,
+        parameters: list[torch.nn.Parameter],
+        accumulated: dict[str, torch.Tensor] | None = None,
+    ) -> bool:
         gradients_finite = torch.stack([torch.isfinite(p.grad).all() for p in parameters]).all().item() if parameters else True
         if not gradients_finite:
             self._last_failure_reason = "nonfinite_gradient"
@@ -415,9 +654,10 @@ class FocusedTrainer:
             except BaseException:
                 self._unsafe_state = True
                 raise
-        values = torch.stack([accumulated[key] for key in accumulated]).float().cpu().tolist()
-        self.last_step_losses = dict(zip(accumulated, values))
-        self.last_step_losses["total"] = sum(values)
+        if accumulated is not None:
+            values = torch.stack([accumulated[key] for key in accumulated]).float().cpu().tolist()
+            self.last_step_losses = dict(zip(accumulated, values))
+            self.last_step_losses["total"] = sum(values)
         return True
 
     def train_batch(self, batch: dict[str, Any]) -> bool:
@@ -509,6 +749,7 @@ class FocusedTrainer:
             raise ValueError("planned_steps differs from the resumed learning schedule")
         self.planned_steps = planned_steps
         self._stop_requested = False
+        self._optimizer_train()
         self.model.train()
         self._set_progress(planned_steps)
         if not self.latest_path.exists():
@@ -541,6 +782,7 @@ class FocusedTrainer:
                         "skipped_updates": self.skipped_updates,
                         "oom_retries": self.oom_retries,
                         "losses": dict(self.last_step_losses),
+                        "gradient_stats": dict(self.last_gradient_stats),
                         "batch_wait_sec": batch_wait_sec,
                         "update_wall_sec": update_wall_sec,
                     })

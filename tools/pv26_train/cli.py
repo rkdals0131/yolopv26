@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import nullcontext
 from dataclasses import asdict
 from datetime import datetime
 import json
@@ -14,6 +15,7 @@ import time
 
 import numpy as np
 import torch
+from torch import nn
 from torch.utils.data import DataLoader, Subset
 import yaml
 
@@ -76,6 +78,80 @@ def validation_subset(dataset: FocusedDataset, samples_per_source: int) -> Subse
     return Subset(dataset, selected)
 
 
+def _optimizer_and_scheduler(model: PV26FocusedModel, train_cfg: dict, planned_steps: int):
+    head_lr = float(train_cfg["head_lr"])
+    groups = []
+    for name, module, lr in (
+        ("backbone", model.detector.model[:-1], train_cfg["backbone_lr"]),
+        ("detector_head", model.detector.model[-1],
+         train_cfg.get("detector_head_lr", head_lr)),
+        ("roadmark", model.roadmark_decoder,
+         train_cfg.get("roadmark_head_lr", head_lr)),
+    ):
+        params = [parameter for parameter in module.parameters() if parameter.requires_grad]
+        if params:
+            groups.append({"params": params, "lr": float(lr), "name": name})
+
+    optimizer_name = str(train_cfg.get("optimizer", "adamw"))
+    weight_decay = float(train_cfg["weight_decay"])
+    if optimizer_name == "adamw":
+        optimizer = torch.optim.AdamW(groups, weight_decay=weight_decay)
+    elif optimizer_name == "schedulefree_adamw":
+        from schedulefree import AdamWScheduleFree
+        optimizer = AdamWScheduleFree(
+            groups, weight_decay=weight_decay,
+            warmup_steps=int(train_cfg.get("schedulefree_warmup_steps", 0)),
+        )
+    elif optimizer_name == "prodigy":
+        from prodigyopt import Prodigy
+        prodigy_groups = [{"params": group["params"], "name": group["name"]} for group in groups]
+        optimizer = Prodigy(
+            prodigy_groups, lr=1.0, weight_decay=weight_decay,
+            d_coef=float(train_cfg.get("prodigy_d_coef", 1.0)),
+            slice_p=int(train_cfg.get("prodigy_slice_p", 11)),
+        )
+    else:
+        raise ValueError(f"unsupported optimizer: {optimizer_name}")
+
+    schedule_name = str(train_cfg.get("lr_schedule", "cosine"))
+    if optimizer_name == "schedulefree_adamw" and schedule_name != "constant":
+        raise ValueError("schedulefree_adamw requires lr_schedule: constant")
+    if schedule_name == "cosine":
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=planned_steps)
+    elif schedule_name == "constant":
+        scheduler = None
+    else:
+        raise ValueError(f"unsupported lr_schedule: {schedule_name}")
+    return optimizer, scheduler
+
+
+@torch.no_grad()
+def _recompute_batch_norm(model, loader, *, device: torch.device, precision: str) -> None:
+    modules = [module for module in model.modules() if isinstance(module, nn.modules.batchnorm._BatchNorm)]
+    if not modules:
+        return
+    momenta = {module: module.momentum for module in modules}
+    was_training = model.training
+    for module in modules:
+        module.reset_running_stats()
+        module.momentum = None
+    model.train()
+    dtype = {"bf16": torch.bfloat16, "fp16": torch.float16}.get(precision)
+    try:
+        for cpu_batch in loader:
+            image = cpu_batch["image"].to(device, non_blocking=True)
+            amp = (
+                torch.autocast(device_type=device.type, dtype=dtype)
+                if dtype is not None else nullcontext()
+            )
+            with amp:
+                model.forward_for_loss(image)
+    finally:
+        for module, momentum in momenta.items():
+            module.momentum = momentum
+        model.train(was_training)
+
+
 def _run_output(args: argparse.Namespace) -> Path:
     if args.resume_run is not None:
         return _output_directory(_path(args.resume_run))
@@ -90,8 +166,9 @@ def _run_output(args: argparse.Namespace) -> Path:
 
 def _configuration(args: argparse.Namespace, output: Path) -> dict:
     if args.resume_run is not None:
-        if args.initial_checkpoint is not None or args.stage is not None or args.sample_limit is not None:
-            raise ValueError("resume uses the saved stage and dataset; start a new run to change them")
+        if (args.initial_checkpoint is not None or args.stage is not None
+                or args.sample_limit is not None or getattr(args, "seed", None) is not None):
+            raise ValueError("resume uses the saved stage, dataset, and seed; start a new run to change them")
         cfg = read_json(output / "run_config.json")
     else:
         with _path(args.config).open(encoding="utf-8") as stream:
@@ -100,6 +177,8 @@ def _configuration(args: argparse.Namespace, output: Path) -> dict:
         for source in cfg["data"]["sources"]:
             source["root"] = str(_path(source["root"]))
         cfg["data"]["sample_limit_per_source"] = args.sample_limit
+        if getattr(args, "seed", None) is not None:
+            cfg["data"]["seed"] = args.seed
         if args.stage is not None:
             cfg["train"]["stage"] = args.stage
         if (output / "run_config.json").exists():
@@ -157,7 +236,10 @@ def _train_locked(args: argparse.Namespace, output: Path) -> dict:
             dataset.save_index(index)
         datasets.append(dataset)
     print(f"data: train={len(datasets[0])}, val={len(datasets[1])}, run={output}", flush=True)
-    sampler = LogicalBatchSampler(datasets[0], batch_size=int(train_cfg["logical_batch_size"]), seed=seed)
+    sampler = LogicalBatchSampler(
+        datasets[0], batch_size=int(train_cfg["logical_batch_size"]), seed=seed,
+        strategy=str(data_cfg.get("sampling_strategy", "random_with_replacement")),
+    )
     initial_checkpoint = cfg.get("initial_checkpoint")
     model = PV26FocusedModel(weights=None if has_checkpoint or initial_checkpoint else cfg["model"]["weights"],
         variant=cfg["model"]["variant"], roadmark_width=int(cfg["model"]["roadmark_width"])).to(device)
@@ -165,23 +247,21 @@ def _train_locked(args: argparse.Namespace, output: Path) -> dict:
     if initial_checkpoint and not has_checkpoint:
         initial = torch.load(initial_checkpoint, map_location="cpu", weights_only=False)
         model.load_state_dict(initial["model"])
-    criterion = PV26FocusedLoss(model)
-    groups = []
-    for name, module, lr in (("backbone", model.detector.model[:-1], train_cfg["backbone_lr"]),
-                             ("detector_head", model.detector.model[-1], train_cfg["head_lr"]),
-                             ("roadmark", model.roadmark_decoder, train_cfg["head_lr"])):
-        params = [p for p in module.parameters() if p.requires_grad]
-        if params:
-            groups.append({"params": params, "lr": float(lr), "name": name})
-    optimizer = torch.optim.AdamW(groups, weight_decay=float(train_cfg["weight_decay"]))
+    criterion = PV26FocusedLoss(
+        model, det_weight=float(train_cfg.get("det_loss_weight", 1.0)),
+        roadmark_weight=float(train_cfg.get("roadmark_loss_weight", 1.0)),
+    )
     planned_steps = int(train_cfg["max_steps"])
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=planned_steps)
+    optimizer, scheduler = _optimizer_and_scheduler(model, train_cfg, planned_steps)
     trainer = FocusedTrainer(model, criterion, optimizer, scheduler, sampler,
         FocusedTrainerConfig(output_dir=output, device=str(device), precision=precision,
             microbatch_size=int(train_cfg["microbatch_size"]), stage=stage,
             checkpoint_interval_sec=float(train_cfg["checkpoint_interval_sec"]),
             max_consecutive_failures=int(train_cfg["max_consecutive_failures"]),
-            grad_clip_norm=float(train_cfg["grad_clip_norm"])), run_metadata=cfg)
+            grad_clip_norm=float(train_cfg["grad_clip_norm"]),
+            gradient_strategy=str(train_cfg.get("gradient_strategy", "sum")),
+            gradnorm_alpha=float(train_cfg.get("gradnorm_alpha", 1.5)),
+            gradnorm_lr=float(train_cfg.get("gradnorm_lr", 0.025))), run_metadata=cfg)
     if has_checkpoint:
         trainer.load_checkpoint()
         if args.microbatch_size is not None:
@@ -189,6 +269,19 @@ def _train_locked(args: argparse.Namespace, output: Path) -> dict:
     train_loader = _loader(datasets[0], data_cfg, sampler=sampler)
     validation_data = validation_subset(datasets[1], int(train_cfg.get("validation_samples_per_source", 128)))
     val_loader = _loader(validation_data, data_cfg, batch_size=max(1, min(trainer.microbatch_size, 4)))
+    bn_loader = None
+    if str(train_cfg.get("optimizer", "adamw")) == "schedulefree_adamw":
+        calibration_dataset = FocusedDataset(
+            sources, split="train", image_hw=image_hw, seed=seed, augment=False,
+            index_path=output / "train_samples.jsonl",
+        )
+        calibration_data = validation_subset(
+            calibration_dataset,
+            int(train_cfg.get("schedulefree_bn_samples_per_source", 32)),
+        )
+        bn_loader = _loader(
+            calibration_data, data_cfg, batch_size=max(1, min(trainer.microbatch_size, 8))
+        )
     stop_at = min(planned_steps, trainer.global_step + args.steps) if args.steps is not None else planned_steps
     started = time.monotonic()
     starting_step = trainer.global_step
@@ -196,15 +289,25 @@ def _train_locked(args: argparse.Namespace, output: Path) -> dict:
 
     def validate() -> None:
         nonlocal validation
-        validation_started = time.monotonic()
-        validation = evaluate_focused(model, criterion, val_loader, device=device, precision=precision,
-                                      max_batches=len(val_loader),
-                                      geometry_tolerance_px=float(train_cfg.get("geometry_tolerance_px", 8.0)))
-        validation["elapsed_sec"] = time.monotonic() - validation_started
-        validation["global_step"] = trainer.global_step
-        write_json(output / "validation.json", validation, ensure_ascii=False)
-        trainer.update_best(float(validation["selection_metric"]))
-        print(json.dumps({"validation": validation}, ensure_ascii=False), flush=True)
+        trainer.begin_evaluation()
+        try:
+            validation_started = time.monotonic()
+            if bn_loader is not None:
+                _recompute_batch_norm(model, bn_loader, device=device, precision=precision)
+            validation = evaluate_focused(model, criterion, val_loader, device=device, precision=precision,
+                                          max_batches=len(val_loader),
+                                          geometry_tolerance_px=float(train_cfg.get("geometry_tolerance_px", 8.0)))
+            validation["elapsed_sec"] = time.monotonic() - validation_started
+            validation["global_step"] = trainer.global_step
+            validation["balanced_task_f1"] = 0.5 * (
+                float(validation["signal_detection_total"]["f1"])
+                + float(validation["roadmark_lines_total"]["f1"])
+            )
+            write_json(output / "validation.json", validation, ensure_ascii=False)
+            trainer.update_best(float(validation["selection_metric"]))
+            print(json.dumps({"validation": validation}, ensure_ascii=False), flush=True)
+        finally:
+            trainer.end_evaluation()
 
     def on_step(current: FocusedTrainer, summary: dict) -> None:
         progress_every = int(os.environ.get("YOLOPV26_PROGRESS_EVERY", train_cfg["log_every"]))
@@ -233,6 +336,8 @@ def _train_locked(args: argparse.Namespace, output: Path) -> dict:
     finally:
         _stop_loader(train_loader)
         _stop_loader(val_loader)
+        if bn_loader is not None:
+            _stop_loader(bn_loader)
 
 
 def main(argv: list[str] | None = None) -> dict:
@@ -248,6 +353,7 @@ def main(argv: list[str] | None = None) -> dict:
     parser.add_argument("--microbatch-size", type=int)
     parser.add_argument("--steps", type=int, help="Stop after this many additional optimizer updates.")
     parser.add_argument("--sample-limit", type=int, help="Limit samples per source for a short development run.")
+    parser.add_argument("--seed", type=int, help="Override the data, augmentation, and initialization seed.")
     args = parser.parse_args(argv)
     if args.steps is not None and args.steps < 1:
         parser.error("--steps must be positive")

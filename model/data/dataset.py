@@ -532,13 +532,19 @@ class LogicalBatchSampler(Sampler[list[tuple[int, int]]]):
 
     def __init__(self, dataset: FocusedDataset, *, batch_size: int,
                  source_ratios: Mapping[str, float] | None = None, seed: int = 0,
-                 start_position: int = 0) -> None:
+                 start_position: int = 0,
+                 strategy: str = "random_with_replacement") -> None:
         if batch_size <= 0 or start_position < 0 or start_position % batch_size:
             raise ValueError("batch_size must be positive and position batch-aligned")
+        if strategy not in {"random_with_replacement", "least_used_of_two"}:
+            raise ValueError(
+                "strategy must be random_with_replacement or least_used_of_two"
+            )
         self.dataset = dataset
         self.batch_size = int(batch_size)
         self.seed = int(seed)
         self.position = int(start_position)
+        self.strategy = strategy
         ratios = {source.name: float(source.weight) for source in dataset.sources}
         if source_ratios is not None:
             if set(source_ratios) != set(ratios):
@@ -558,16 +564,51 @@ class LogicalBatchSampler(Sampler[list[tuple[int, int]]]):
         self._ranges[-1] = (1.0, self._ranges[-1][1])
         self._offset = random.Random(seed).randrange(1 << 30)
 
+    def _source_name(self, draw_id: int) -> str:
+        fraction = _radical_inverse_base2(draw_id + self._offset + 1)
+        return next(name for end, name in self._ranges if fraction < end)
+
+    def _random_index(self, source_name: str, draw_id: int) -> int:
+        indices = self.dataset.indices_by_source[source_name]
+        sample_rng = random.Random((self.seed << 32) + draw_id)
+        return indices[sample_rng.randrange(len(indices))]
+
+    def _two_choice_index(
+        self, source_name: str, draw_id: int, use_counts: np.ndarray
+    ) -> int:
+        indices = self.dataset.indices_by_source[source_name]
+        sample_rng = random.Random((self.seed << 32) + draw_id)
+        first_position = sample_rng.randrange(len(indices))
+        if len(indices) == 1:
+            return indices[first_position]
+        second_position = sample_rng.randrange(len(indices) - 1)
+        if second_position >= first_position:
+            second_position += 1
+        first = indices[first_position]
+        second = indices[second_position]
+        return first if use_counts[first] <= use_counts[second] else second
+
     def __iter__(self) -> Iterator[list[tuple[int, int]]]:
         cursor = self.position
+        use_counts = np.zeros(len(self.dataset), dtype=np.int32)
+        if self.strategy == "least_used_of_two":
+            # DataLoader may have prefetched beyond the committed position. Rebuild
+            # exposure state from durable draw ids so restart never counts prefetched
+            # samples as consumed.
+            for draw_id in range(cursor):
+                source_name = self._source_name(draw_id)
+                selected = self._two_choice_index(source_name, draw_id, use_counts)
+                use_counts[selected] += 1
         while True:
             keys: list[tuple[int, int]] = []
             for draw_id in range(cursor, cursor + self.batch_size):
-                fraction = _radical_inverse_base2(draw_id + self._offset + 1)
-                source_name = next(name for end, name in self._ranges if fraction < end)
-                indices = self.dataset.indices_by_source[source_name]
-                sample_rng = random.Random((self.seed << 32) + draw_id)
-                keys.append((indices[sample_rng.randrange(len(indices))], draw_id))
+                source_name = self._source_name(draw_id)
+                if self.strategy == "least_used_of_two":
+                    selected = self._two_choice_index(source_name, draw_id, use_counts)
+                    use_counts[selected] += 1
+                else:
+                    selected = self._random_index(source_name, draw_id)
+                keys.append((selected, draw_id))
             yield keys
             cursor += self.batch_size
 
@@ -578,11 +619,13 @@ class LogicalBatchSampler(Sampler[list[tuple[int, int]]]):
 
     def state_dict(self) -> dict[str, Any]:
         return {"position": self.position, "batch_size": self.batch_size,
-                "seed": self.seed, "source_ratios": dict(self.source_ratios)}
+                "seed": self.seed, "source_ratios": dict(self.source_ratios),
+                "strategy": self.strategy}
 
     def load_state_dict(self, state: Mapping[str, Any]) -> None:
         if (int(state["batch_size"]) != self.batch_size or int(state["seed"]) != self.seed
-                or dict(state["source_ratios"]) != self.source_ratios):
+                or dict(state["source_ratios"]) != self.source_ratios
+                or str(state.get("strategy", "random_with_replacement")) != self.strategy):
             raise ValueError("resume sampler configuration differs from saved run")
         position = int(state["position"])
         if position < 0 or position % self.batch_size:

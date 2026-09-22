@@ -56,6 +56,7 @@ python3 tools/run_pv26_train.py --steps 2 --sample-limit 64
 ```
 
 `--sample-limit`은 source별 원본 수를 제한한다. 본학습에서는 이 옵션을 생략한다. 검증 표본은 source마다 전체 목록에 걸쳐 고르게 선택하며, 물리 배치 크기를 바꿔도 같은 표본을 사용한다.
+방법론 비교를 반복할 때는 `--seed`로 표본 선택, 증강과 초기화 seed를 함께 바꿀 수 있다.
 
 ## 재개
 

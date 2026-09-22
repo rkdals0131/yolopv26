@@ -6,6 +6,8 @@ scipy==1.15.3
 pillow==12.1.1
 pyyaml==6.0.3
 rich==14.2.0
+schedulefree==1.4.1
+prodigyopt==1.1.2
 
 # Development tests
 pytest==8.3.5

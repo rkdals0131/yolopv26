@@ -15,6 +15,7 @@ data:
       root: seg_dataset/AIHUB/차선-횡단보도 인지 영상(수도권)
       weight: 1.0
   seed: 26
+  sampling_strategy: random_with_replacement
   num_workers: 4
   prefetch_factor: 2
   pin_memory: true
@@ -27,8 +28,13 @@ train:
   logical_batch_size: 32
   microbatch_size: 20
   max_steps: 10000
+  optimizer: adamw
+  lr_schedule: cosine
+  gradient_strategy: sum
   backbone_lr: 0.0001
   head_lr: 0.001
+  det_loss_weight: 1.0
+  roadmark_loss_weight: 1.0
   weight_decay: 0.0001
   grad_clip_norm: 5.0
   checkpoint_interval_sec: 600

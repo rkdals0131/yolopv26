@@ -2,7 +2,7 @@ import json
 
 from PIL import Image
 
-from model.data.dataset import FocusedDataset, FocusedSource
+from model.data.dataset import FocusedDataset, FocusedSource, LogicalBatchSampler
 
 
 def test_declared_image_name_and_saved_membership(tmp_path):
@@ -88,3 +88,37 @@ def test_unknown_labels_mask_only_untrusted_supervision(tmp_path):
     blue = FocusedDataset([FocusedSource("roadmark", road_root, "roadmark")], image_hw=(32, 32))[0]
     assert blue["roadmark_valid"].any(dim=(1, 2)).tolist() == [True, True, True]
     assert blue["roadmark_target"].sum() == 0
+
+
+def test_two_choice_sampler_balances_exposure_and_resumes_from_committed_position():
+    dataset = type("Dataset", (), {
+        "sources": (FocusedSource("traffic", "/unused", "traffic"),),
+        "indices_by_source": {"traffic": list(range(32))},
+        "__len__": lambda self: 32,
+    })()
+    random_sampler = LogicalBatchSampler(dataset, batch_size=8, seed=26)
+    balanced_sampler = LogicalBatchSampler(
+        dataset, batch_size=8, seed=26, strategy="least_used_of_two"
+    )
+
+    random_iterator = iter(random_sampler)
+    random_draws = [index for _ in range(40) for index, _ in next(random_iterator)]
+    balanced_iterator = iter(balanced_sampler)
+    balanced_draws = [index for _ in range(40) for index, _ in next(balanced_iterator)]
+    random_counts = [random_draws.count(index) for index in range(32)]
+    balanced_counts = [balanced_draws.count(index) for index in range(32)]
+    assert max(balanced_counts) - min(balanced_counts) < max(random_counts) - min(random_counts)
+
+    committed = LogicalBatchSampler(
+        dataset, batch_size=8, seed=26, strategy="least_used_of_two"
+    )
+    committed_iterator = iter(committed)
+    for _ in range(7):
+        next(committed_iterator)
+        committed.commit(8)
+    expected_next = next(committed_iterator)
+    resumed = LogicalBatchSampler(
+        dataset, batch_size=8, seed=26, start_position=56,
+        strategy="least_used_of_two",
+    )
+    assert next(iter(resumed)) == expected_next
