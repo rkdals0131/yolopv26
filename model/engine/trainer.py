@@ -451,8 +451,11 @@ class FocusedTrainer:
         det_gradients: list[torch.Tensor | None],
         road_gradients: list[torch.Tensor | None],
         accumulated: dict[str, torch.Tensor],
-    ) -> None:
+    ) -> tuple[bool, torch.Tensor | None, torch.Tensor | None]:
         dot, det_sq, road_sq = self._gradient_geometry(det_gradients, road_gradients)
+        if not torch.isfinite(torch.stack((dot, det_sq, road_sq))).all().item():
+            self._last_failure_reason = "nonfinite_task_gradient"
+            return False, None, None
         cosine = dot / (det_sq * road_sq).sqrt().clamp_min(1e-30)
         self.last_gradient_stats = {
             "task_cosine": float(cosine),
@@ -475,7 +478,7 @@ class FocusedTrainer:
                         det_gradient - det_coefficient * road_gradient
                         + road_gradient - road_coefficient * det_gradient
                     )
-            return
+            return True, None, None
 
         if self._gradnorm_weights is None or self._gradnorm_optimizer is None:
             raise RuntimeError("GradNorm state is unavailable")
@@ -483,8 +486,9 @@ class FocusedTrainer:
             accumulated["det"],
             accumulated["roadmark_bce"] + accumulated["roadmark_dice"],
         )).to(self.device)
-        if self._gradnorm_initial_losses is None:
-            self._gradnorm_initial_losses = task_losses.detach().clamp_min(1e-12)
+        initial_losses = self._gradnorm_initial_losses
+        if initial_losses is None:
+            initial_losses = task_losses.detach().clamp_min(1e-12)
         weights = self._gradnorm_weights.detach().clone()
         for parameter, det_gradient, road_gradient in zip(
             parameters, det_gradients, road_gradients
@@ -498,27 +502,45 @@ class FocusedTrainer:
 
         base_norms = torch.stack((det_sq.sqrt(), road_sq.sqrt())).detach()
         weighted_norms = self._gradnorm_weights * base_norms
-        relative_rates = task_losses.detach() / self._gradnorm_initial_losses
+        relative_rates = task_losses.detach() / initial_losses
         inverse_rates = relative_rates / relative_rates.mean().clamp_min(1e-12)
         targets = weighted_norms.detach().mean() * inverse_rates.pow(self.config.gradnorm_alpha)
         gradnorm_loss = (weighted_norms - targets).abs().sum()
+        if not torch.isfinite(gradnorm_loss.detach()).item():
+            self._last_failure_reason = "nonfinite_gradnorm_loss"
+            return False, None, None
+        return True, gradnorm_loss, initial_losses
+
+    def _finish_gradnorm_update(
+        self, gradnorm_loss: torch.Tensor, initial_losses: torch.Tensor
+    ) -> None:
+        if self._gradnorm_weights is None or self._gradnorm_optimizer is None:
+            raise RuntimeError("GradNorm state is unavailable")
         self._gradnorm_optimizer.zero_grad(set_to_none=True)
-        gradnorm_loss.backward()
-        self._gradnorm_optimizer.step()
+        try:
+            gradnorm_loss.backward()
+            self._gradnorm_optimizer.step()
+        except BaseException:
+            self._unsafe_state = True
+            raise
         with torch.no_grad():
             self._gradnorm_weights.clamp_(min=1e-3)
             self._gradnorm_weights.mul_(2.0 / self._gradnorm_weights.sum())
+        if self._gradnorm_initial_losses is None:
+            self._gradnorm_initial_losses = initial_losses
         self.last_gradient_stats.update({
             "det_task_weight": float(self._gradnorm_weights[0].detach()),
             "roadmark_task_weight": float(self._gradnorm_weights[1].detach()),
         })
 
-    def _attempt_task_gradient_update(self, batch: dict[str, Any], physical_size: int) -> bool:
+    def _attempt_task_gradient_update(
+        self, batch: dict[str, Any], physical_size: int
+    ) -> tuple[bool, torch.Tensor | None, torch.Tensor | None]:
         sample_count = int(batch["image"].shape[0])
         total_counts = self.batch_adapter.term_counts(batch)
         if not total_counts.get("det") or not total_counts.get("roadmark_bce"):
             self._last_failure_reason = "task_gradient_strategy_requires_both_tasks"
-            return False
+            return False, None, None
         parameters = self._optimizer_parameters()
         det_gradients: list[torch.Tensor | None] = [None] * len(parameters)
         road_gradients: list[torch.Tensor | None] = [None] * len(parameters)
@@ -541,7 +563,7 @@ class FocusedTrainer:
                 road_loss = scaled_terms["roadmark_bce"] + scaled_terms["roadmark_dice"]
             if not torch.isfinite(det_loss.detach() + road_loss.detach()).item():
                 self._last_failure_reason = "nonfinite_task_loss"
-                return False
+                return False, None, None
             for key, term in scaled_terms.items():
                 detached = term.detach()
                 accumulated[key] = accumulated[key] + detached if key in accumulated else detached
@@ -556,19 +578,30 @@ class FocusedTrainer:
                 gradients = torch.autograd.grad(road_loss, parameters, allow_unused=True)
                 self._accumulate_gradients(road_gradients, gradients)
             del outputs, losses, weighted_terms, scaled_terms, det_loss, road_loss, micro
-        self._assign_task_gradients(parameters, det_gradients, road_gradients, accumulated)
+        ready, gradnorm_loss, initial_losses = self._assign_task_gradients(
+            parameters, det_gradients, road_gradients, accumulated
+        )
+        if not ready:
+            return False, None, None
         values = torch.stack([accumulated[key] for key in accumulated]).float().cpu().tolist()
         self.last_step_losses = dict(zip(accumulated, values))
         self.last_step_losses["total"] = sum(values)
-        return True
+        return True, gradnorm_loss, initial_losses
 
     def _attempt_update(self, batch: dict[str, Any], physical_size: int) -> bool:
         if self.config.gradient_strategy != "sum":
-            gradients_ready = self._attempt_task_gradient_update(batch, physical_size)
+            gradients_ready, gradnorm_loss, initial_losses = self._attempt_task_gradient_update(
+                batch, physical_size
+            )
             if not gradients_ready:
                 return False
             parameters = [p for p in self._optimizer_parameters() if p.grad is not None]
-            return self._finish_optimizer_update(parameters)
+            completed = self._finish_optimizer_update(parameters)
+            if completed and gradnorm_loss is not None:
+                if initial_losses is None:
+                    raise RuntimeError("GradNorm initial losses are unavailable")
+                self._finish_gradnorm_update(gradnorm_loss, initial_losses)
+            return completed
         sample_count = int(batch["image"].shape[0])
         total_counts = self.batch_adapter.term_counts(batch)
         if not any(total_counts.values()):

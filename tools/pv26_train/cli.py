@@ -78,7 +78,7 @@ def validation_subset(dataset: FocusedDataset, samples_per_source: int) -> Subse
     return Subset(dataset, selected)
 
 
-def _optimizer_and_scheduler(model: PV26FocusedModel, train_cfg: dict, planned_steps: int):
+def optimizer_groups(model: PV26FocusedModel, train_cfg: dict) -> list[dict]:
     head_lr = float(train_cfg["head_lr"])
     groups = []
     for name, module, lr in (
@@ -86,11 +86,16 @@ def _optimizer_and_scheduler(model: PV26FocusedModel, train_cfg: dict, planned_s
         ("detector_head", model.detector.model[-1],
          train_cfg.get("detector_head_lr", head_lr)),
         ("roadmark", model.roadmark_decoder,
-         train_cfg.get("roadmark_head_lr", head_lr)),
+         train_cfg.get("roadmark_lr", head_lr)),
     ):
         params = [parameter for parameter in module.parameters() if parameter.requires_grad]
         if params:
             groups.append({"params": params, "lr": float(lr), "name": name})
+    return groups
+
+
+def _optimizer_and_scheduler(model: PV26FocusedModel, train_cfg: dict, planned_steps: int):
+    groups = optimizer_groups(model, train_cfg)
 
     optimizer_name = str(train_cfg.get("optimizer", "adamw"))
     weight_decay = float(train_cfg["weight_decay"])
@@ -304,7 +309,11 @@ def _train_locked(args: argparse.Namespace, output: Path) -> dict:
                 + float(validation["roadmark_lines_total"]["f1"])
             )
             write_json(output / "validation.json", validation, ensure_ascii=False)
-            trainer.update_best(float(validation["selection_metric"]))
+            selected = trainer.update_best(float(validation["selection_metric"]))
+            if bn_loader is not None and not selected:
+                # ScheduleFree checkpoints contain evaluation weights. Publish the
+                # recalibrated BatchNorm buffers even when best.pt is unchanged.
+                trainer.save_checkpoint()
             print(json.dumps({"validation": validation}, ensure_ascii=False), flush=True)
         finally:
             trainer.end_evaluation()

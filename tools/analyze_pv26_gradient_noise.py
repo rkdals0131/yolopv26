@@ -19,7 +19,9 @@ site.addsitedir(str(Path(__file__).resolve().parents[1]))
 from common.io import write_json
 from model.data.dataset import FocusedDataset, FocusedSource, LogicalBatchSampler, collate_focused
 from model.engine.loss import PV26FocusedLoss
+from model.engine.trainer import FocusedBatchAdapter
 from model.net.pv26 import PV26FocusedModel
+from tools.pv26_train.cli import _optimizer_and_scheduler
 
 
 def _device_batch(batch: dict, device: torch.device) -> dict:
@@ -34,6 +36,8 @@ def estimate(run_dir: Path, *, logical_batches: int, small_batch_size: int) -> d
     checkpoint = torch.load(run_dir / "checkpoints/latest.pt", map_location="cpu", weights_only=False)
     train_cfg, data_cfg = cfg["train"], cfg["data"]
     logical_batch_size = int(train_cfg["logical_batch_size"])
+    if logical_batches <= 0 or small_batch_size <= 0:
+        raise ValueError("logical batch count and small batch size must be positive")
     if logical_batch_size % small_batch_size:
         raise ValueError("logical batch size must be divisible by the small batch size")
     device = torch.device(train_cfg["device"])
@@ -47,10 +51,12 @@ def estimate(run_dir: Path, *, logical_batches: int, small_batch_size: int) -> d
     ]
     dataset = FocusedDataset(
         sources, split="train", image_hw=tuple(cfg["model"]["image_hw"]), seed=seed,
-        augment=True, index_path=run_dir / "train_samples.jsonl",
+        augment=bool(data_cfg.get("augment", False)), index_path=run_dir / "train_samples.jsonl",
     )
+    sampler_position = int((checkpoint.get("sampler") or {}).get("position", 0))
     sampler = LogicalBatchSampler(
         dataset, batch_size=logical_batch_size, seed=seed,
+        start_position=sampler_position,
         strategy=str(data_cfg.get("sampling_strategy", "random_with_replacement")),
     )
     iterator = iter(sampler)
@@ -59,24 +65,39 @@ def estimate(run_dir: Path, *, logical_batches: int, small_batch_size: int) -> d
         roadmark_width=int(cfg["model"]["roadmark_width"]),
     ).to(device)
     model.load_state_dict(checkpoint["model"])
-    model.set_train_stage("joint")
-    model.eval()
+    stage = str(checkpoint["stage"])
+    model.set_train_stage(stage)
+    if str(train_cfg.get("optimizer", "adamw")) == "schedulefree_adamw":
+        optimizer, _ = _optimizer_and_scheduler(
+            model, train_cfg, int(checkpoint["planned_steps"])
+        )
+        optimizer.load_state_dict(checkpoint["optimizer"])
+        optimizer.train()
+        del optimizer
+    model.train()
     criterion = PV26FocusedLoss(
         model, det_weight=float(train_cfg.get("det_loss_weight", 1.0)),
         roadmark_weight=float(train_cfg.get("roadmark_loss_weight", 1.0)),
     ).to(device)
     criterion.set_progress(int(checkpoint["global_step"]), int(checkpoint["planned_steps"]))
     parameters = [parameter for parameter in model.parameters() if parameter.requires_grad]
+    adapter = FocusedBatchAdapter()
     dtype = {"bfloat16": torch.bfloat16, "float16": torch.float16}.get(train_cfg["amp_dtype"])
     estimates = []
     for logical_index in range(logical_batches):
         keys = next(iterator)
+        logical_batch = collate_focused([dataset[key] for key in keys])
+        total_counts = adapter.term_counts(logical_batch)
+        chunks_per_logical_batch = logical_batch_size // small_batch_size
         gradient_sums: list[torch.Tensor | None] = [None] * len(parameters)
         small_norm_sum = torch.zeros((), device=device)
         small_batches = 0
         for start in range(0, logical_batch_size, small_batch_size):
-            samples = [dataset[key] for key in keys[start:start + small_batch_size]]
-            batch = _device_batch(collate_focused(samples), device)
+            cpu_batch = adapter.slice_batch(
+                logical_batch, start, start + small_batch_size
+            )
+            micro_counts = adapter.term_counts(cpu_batch)
+            batch = _device_batch(cpu_batch, device)
             amp = (
                 torch.autocast(device_type=device.type, dtype=dtype)
                 if dtype is not None else nullcontext()
@@ -84,7 +105,14 @@ def estimate(run_dir: Path, *, logical_batches: int, small_batch_size: int) -> d
             with amp:
                 outputs = model.forward_for_loss(batch["image"])
             losses = criterion(outputs, batch)
-            loss = losses["total"]
+            weighted_terms = adapter.weighted_terms(losses, criterion)
+            contribution = sum(
+                term * (micro_counts[name] / total_counts[name] if total_counts[name] else 0.0)
+                for name, term in weighted_terms.items()
+            )
+            # Scale each contribution into a small-batch gradient estimator whose
+            # mean is the exact trainer-normalized logical-batch gradient.
+            loss = contribution * chunks_per_logical_batch
             gradients = torch.autograd.grad(loss, parameters, allow_unused=True)
             norm = torch.zeros((), device=device)
             for index, gradient in enumerate(gradients):

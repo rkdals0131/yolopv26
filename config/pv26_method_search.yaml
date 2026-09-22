@@ -15,12 +15,12 @@ candidates:
   - name: adamw_lr_3x
     overrides:
       train: {backbone_lr: 0.0003, head_lr: 0.003}
-  - name: adamw_roadmark_head_2x
+  - name: adamw_roadmark_2x
     overrides:
-      train: {roadmark_head_lr: 0.002}
-  - name: adamw_roadmark_head_3x
+      train: {roadmark_lr: 0.002}
+  - name: adamw_roadmark_3x
     overrides:
-      train: {roadmark_head_lr: 0.003}
+      train: {roadmark_lr: 0.003}
   - name: adamw_constant
     overrides:
       train: {lr_schedule: constant}

@@ -64,6 +64,25 @@ class _NonfiniteLoss(_Loss):
         return losses
 
 
+class _FiniteForwardInfiniteBackward(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, value: torch.Tensor) -> torch.Tensor:
+        del ctx
+        return value
+
+    @staticmethod
+    def backward(ctx, gradient: torch.Tensor) -> torch.Tensor:
+        del ctx
+        return gradient * float("inf")
+
+
+class _NonfiniteGradientLoss(_Loss):
+    def forward(self, outputs: dict[str, torch.Tensor], batch: dict) -> dict[str, torch.Tensor]:
+        losses = super().forward(outputs, batch)
+        losses["det"] = _FiniteForwardInfiniteBackward.apply(losses["det"])
+        return losses
+
+
 def _batch() -> dict:
     roadmark_target = torch.zeros(4, 3, 1, 1)
     roadmark_target[[0, 2, 3], 0, 0, 0] = 1
@@ -175,6 +194,19 @@ def test_task_gradient_strategy_updates_and_restores_state(strategy: str) -> Non
         if strategy == "gradnorm":
             assert restored._gradnorm_initial_losses is not None
             torch.testing.assert_close(restored._gradnorm_weights, trainer._gradnorm_weights)
+
+
+def test_gradnorm_rejected_gradient_preserves_auxiliary_state() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        trainer = _trainer(
+            Path(directory), criterion=_NonfiniteGradientLoss(), gradient_strategy="gradnorm"
+        )
+        before = trainer._gradnorm_weights.detach().clone()
+        assert not trainer.train_batch(_batch())
+        assert trainer.global_step == 0
+        assert trainer._gradnorm_initial_losses is None
+        torch.testing.assert_close(trainer._gradnorm_weights, before)
+        assert torch.isfinite(trainer._gradnorm_weights).all()
 
 
 class _AttrAdapter:
