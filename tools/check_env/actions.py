@@ -55,6 +55,7 @@ ACTIONS = (
     ActionSpec("G", "SignalAttr TorchScript 내보내기", "상태 분류 체크포인트 선택"),
     ActionSpec("P", "이미지 추론", "박스·상태·점열 JSON과 overlay 저장"),
     ActionSpec("L", "실행·평가 결과 보기", "저장된 진행도, 지표와 산출물"),
+    ActionSpec("V", "PV26 전체 검증", "저장된 검증 목록 전체로 체크포인트 평가"),
 )
 
 
@@ -67,7 +68,8 @@ _EDITABLE_SETTINGS = {
         ("GPU 1회 배치", "microbatch_size", int, None),
         ("전체 step", "max_steps", int, None),
         ("Backbone 학습률", "backbone_lr", float, None),
-        ("Head 학습률", "head_lr", float, None),
+        ("Detector head 학습률", "head_lr", float, None),
+        ("Roadmark decoder 학습률", "roadmark_lr", float, None),
         ("Weight decay", "weight_decay", float, None),
         ("Gradient clip", "grad_clip_norm", float, None),
         ("검증 주기", "validation_every", int, None),
@@ -197,7 +199,7 @@ def edit_training_settings(console: Console, snapshot: dict) -> str:
         except ValueError as exc:
             raise ValueError(f"{label} 값을 해석할 수 없습니다: {raw}") from exc
         positive = {"logical_batch_size", "microbatch_size", "max_steps",
-                    "backbone_lr", "head_lr", "learning_rate", "validation_samples"}
+                    "backbone_lr", "head_lr", "roadmark_lr", "learning_rate", "validation_samples"}
         nonnegative = {"weight_decay", "grad_clip_norm", "arrow_loss_weight",
                        "validation_every"}
         if key in positive and value <= 0:
@@ -233,7 +235,7 @@ def select_run(console: Console, snapshot: dict, *, kind: str | None = None,
 
 def _checkpoint(console: Console, snapshot: dict, kind: str, *, optional: bool = False) -> Path | None:
     candidates = []
-    roles = ("published",) if kind == "signal_attr" else ("best", "latest", "previous")
+    roles = ("published",) if kind == "signal_attr" else ("best", "best_roadmark", "latest", "previous")
     for run in snapshot["runs"]:
         if run["kind"] != kind:
             continue
@@ -327,6 +329,21 @@ def _train(console: Console, snapshot: dict, kind: str, *, short: bool = False,
 
 
 def resolve_action(key: str, console: Console, snapshot: dict) -> Command:
+    if key == "V":
+        run = select_run(console, snapshot, kind="pv26")
+        if run["running"]:
+            raise ValueError("학습이 종료된 실행을 선택하세요.")
+        roles = [role for role in ("best", "best_roadmark", "latest") if run["checkpoints"].get(role)]
+        if not roles:
+            raise ValueError("평가할 체크포인트가 없습니다.")
+        role = choose(console, "전체 검증할 체크포인트", roles, str)
+        saved = run["config"]["train"]
+        step = int(run.get("step") or 0)
+        view = TrainingViewSpec("pv26", str(run["stage"]), Path(run["path"]),
+                                step, int(saved["max_steps"]), int(saved["max_steps"]),
+                                int(saved["logical_batch_size"]))
+        return Command("PV26 전체 검증", _argv("run_pv26_train.py", "--resume-run", run["path"],
+                       "--evaluate-only", role), (f"{role} · 저장된 검증 목록 전체를 평가합니다.",), view)
     if key == "1":
         _settings(snapshot, "signal_attr")
         policy = choose(console, "모든 램프가 off인 라벨의 처리", ("exclude", "off"),

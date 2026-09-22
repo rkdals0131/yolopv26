@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from contextlib import nullcontext
 from itertools import islice
-from typing import Any
+from typing import Any, Callable
 
 import torch
 from torchvision.ops import box_iou
@@ -22,9 +23,10 @@ def _scores(tp: int, fp: int, fn: int) -> dict[str, float | int]:
 
 @torch.inference_mode()
 def evaluate_focused(model, criterion, loader, *, device: torch.device,
-                     precision: str = "bf16", max_batches: int = 32,
+                     precision: str = "bf16", max_batches: int | None = None,
                      confidence: float = 0.25, iou_threshold: float = 0.5,
-                     geometry_tolerance_px: float = 8.0) -> dict[str, Any]:
+                     geometry_tolerance_px: float = 8.0,
+                     on_progress: Callable[[int], None] | None = None) -> dict[str, Any]:
     was_training = model.training
     model.eval()
     det_counts = [[0, 0, 0] for _ in SIGNAL_CLASSES]
@@ -33,6 +35,7 @@ def evaluate_focused(model, criterion, loader, *, device: torch.device,
     loss_sums = {"det": 0.0, "roadmark_bce": 0.0, "roadmark_dice": 0.0}
     counts = {name: 0.0 for name in loss_sums}
     samples = 0
+    samples_by_source: Counter[str] = Counter()
     batches = iter(loader)
     try:
         for cpu_batch in islice(batches, max_batches):
@@ -52,6 +55,7 @@ def evaluate_focused(model, criterion, loader, *, device: torch.device,
                 loss_sums[name] += value * amount
                 counts[name] += amount
             samples += len(batch["image"])
+            samples_by_source.update(str(meta.get("source", "unknown")) for meta in batch["meta"])
             if output["det"] is not None:
                 decoded = model.decode_raw_detection(output["det"]).float()
                 height, width = batch["image"].shape[-2:]
@@ -101,6 +105,8 @@ def evaluate_focused(model, criterion, loader, *, device: torch.device,
                     for name, values in result.items():
                         for key, value in values.items():
                             geometry[name][key] += value
+            if on_progress is not None:
+                on_progress(samples)
     finally:
         model.train(was_training)
         shutdown = getattr(batches, "_shutdown_workers", None)
@@ -122,7 +128,7 @@ def evaluate_focused(model, criterion, loader, *, device: torch.device,
         if "matched_angle_count" in values:
             count = values["matched_angle_count"]
             values["mean_angle_error_deg"] = values["matched_angle_error_sum_deg"] / count if count else None
-    return {"samples": samples,
+    return {"samples": samples, "samples_by_source": dict(samples_by_source),
             "loss": {name: loss_sums[name] / max(counts[name], 1) for name in loss_sums},
             "signal_detection": detection, "signal_detection_total": det_total,
             "roadmark_pixels": roadmark, "roadmark_pixels_total": road_total,

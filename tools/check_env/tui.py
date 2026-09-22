@@ -131,7 +131,7 @@ def _setting_rows(config: Any, kind: str) -> list[tuple[str, Any]]:
             ("장치 / 정밀도", f"{train.get('device', '?')} / {train.get('amp_dtype', '?')}"),
             ("논리 / 물리 배치", f"{train.get('logical_batch_size', '?')} / {train.get('microbatch_size', '?')}"),
             ("목표 업데이트", train.get("max_steps")),
-            ("학습률 (본체 / Head)", f"{train.get('backbone_lr', '?')} / {train.get('head_lr', '?')}"),
+            ("LR (본체 / 검출 / 도로표식)", f"{train.get('backbone_lr', '?')} / {train.get('head_lr', '?')} / {train.get('roadmark_lr', train.get('head_lr', '?'))}"),
             ("Weight decay / Grad clip", f"{train.get('weight_decay', '?')} / {train.get('grad_clip_norm', '?')}"),
             ("검증 주기 / 출처당 표본", f"{train.get('validation_every', '?')} / {train.get('validation_samples_per_source', '?')}"),
             ("기본 가중치", model.get("weights")),
@@ -195,10 +195,12 @@ def _brief_settings(config: Any, signal_config: Any, *, stacked: bool = False) -
     pv = _settings_card("PV26", (
         ("운용", f"{pv_train.get('stage', '?')} · {pv_train.get('amp_dtype', '?')} · {pv_train.get('device', '?')}"),
         ("배치", f"update / GPU · 누적 = {_batch(pv_train)}"),
-        ("학습률", f"backbone {pv_train.get('backbone_lr', '?')} · head {pv_train.get('head_lr', '?')}"),
+        ("학습률", f"본체 {pv_train.get('backbone_lr', '?')} · 검출 {pv_train.get('head_lr', '?')}"),
+        ("도로표식 LR", pv_train.get('roadmark_lr', pv_train.get('head_lr', '?'))),
         ("규제", f"WD {pv_train.get('weight_decay', '?')} · clip {pv_train.get('grad_clip_norm', '?')}"),
         ("계획", f"{_integer(pv_train.get('max_steps'))} step · {_integer(pv_train.get('validation_every'))}마다 검증"
                  f" ({_integer(pv_train.get('validation_samples_per_source'))}/source)"),
+        ("최종 검증", "최종·최고 가중치별 전체 검증 목록"),
     ))
     signal_attr = _settings_card("SignalAttr", (
         ("운용", f"{signal_train.get('sampling', '?')} · {signal_train.get('precision', '?')} · {signal_train.get('device', '?')}"),
@@ -326,7 +328,7 @@ def render_dashboard(console: Console, snapshot: dict, actions: tuple[Any, ...])
     menu.add_column(style="dim", no_wrap=True)
     menu.add_column()
     groups = (("준비", "1"), ("학습", "CAD"), ("이어하기", "EK"),
-              ("내보내기", "FG"), ("결과", "PL"))
+              ("내보내기", "FG"), ("결과", "PLV"))
     for label, keys in groups:
         menu.add_row(label, _keys([(action.key, action.label)
                                   for action in actions if action.key in keys]))
@@ -431,11 +433,17 @@ def render_run_details(console: Console, run: dict) -> None:
         console.print(Panel(Group(highlights, _metrics_table(validation, kind, run.get("stage"))),
                             title="검증 결과", title_align="left", border_style="dim"))
 
+    for role, result in (run.get("full_validation") or {}).items():
+        title = f"전체 검증 · {role} · step {result.get('global_step', '?')} · {_integer(result.get('samples'))}장"
+        console.print(Panel(_metrics_table(result, kind, run.get("stage")), title=title,
+                            title_align="left", border_style="cyan"))
+
     artifacts = Table.grid(expand=True, padding=(0, 1))
     artifacts.add_column(style="dim", width=20, no_wrap=True)
     artifacts.add_column(overflow="fold")
     for label, key in (("최근 재개", "latest"), ("이전 재개", "previous"),
-                       ("최고 가중치", "best"), ("배포 가중치", "published")):
+                       ("최고 가중치", "best"), ("도로표식 최고", "best_roadmark"),
+                       ("배포 가중치", "published")):
         path = (run.get("checkpoints") or {}).get(key)
         if path:
             artifacts.add_row(label, _text(path))
@@ -461,6 +469,7 @@ def render_help(console: Console, snapshot: dict) -> None:
         "1은 SignalAttr Crop 생성, C는 PV26 학습, A는 SignalAttr 학습입니다.",
         "D는 짧은 실행, E는 저장된 설정 그대로 재개, K는 기존 가중치로 현재 설정의 새 실행을 시작합니다.",
         "F/G는 각각 PV26/SignalAttr TorchScript 내보내기, P는 이미지 추론, L은 실행 상세입니다.",
+        "V는 PV26의 저장된 검증 목록 전체를 평가합니다. L에서 가중치별 전체 검증 결과를 볼 수 있습니다.",
         "실행 디렉터리 직접 입력은 M, 도움말은 H, 새로고침은 R, 종료는 Q입니다.",
         "질문에서는 B로 뒤로 가고, 최종 명령을 확인한 뒤 y로 실행합니다.",
         "자식 학습 실행에서 Ctrl+C는 정상 종료를 요청합니다. 종료·저장이 끝나면 이 화면으로 돌아옵니다.",

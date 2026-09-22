@@ -2,15 +2,42 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 import yaml
+import torch
 
 from common.io import atomic_write_json, read_json
 from common.train_runtime import training_run_lock
 from tools.pv26_train import cli as focused_cli
 from tools import train_signal_attr as signal_cli
+
+
+def test_roadmark_lr_changes_only_decoder_update_and_has_legacy_fallback():
+    model = SimpleNamespace(
+        detector=SimpleNamespace(model=torch.nn.ModuleList([
+            torch.nn.Linear(1, 1, bias=False), torch.nn.Linear(1, 1, bias=False)])),
+        roadmark_decoder=torch.nn.Linear(1, 1, bias=False),
+    )
+    config = {"backbone_lr": 1e-4, "head_lr": 1e-3, "roadmark_lr": 3e-3}
+    groups = focused_cli.optimizer_groups(model, config)
+    optimizer = torch.optim.AdamW(groups, weight_decay=0)
+    before = {}
+    for group in groups:
+        p = group["params"][0]
+        with torch.no_grad():
+            p.fill_(1.)
+        p.grad = torch.ones_like(p)
+        before[group["name"]] = p.detach().clone()
+    optimizer.step()
+    for group, expected in zip(groups, (1e-4, 1e-3, 3e-3)):
+        delta = before[group["name"]] - group["params"][0].detach()
+        torch.testing.assert_close(delta, torch.full_like(delta, expected), atol=1e-7, rtol=1e-4)
+    del config["roadmark_lr"]
+    legacy = focused_cli.optimizer_groups(model, config)
+    assert legacy[-1]["lr"] == config["head_lr"]
 
 
 def test_training_run_rejects_another_writer_and_keeps_lock_inode(tmp_path: Path) -> None:

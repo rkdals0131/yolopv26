@@ -337,10 +337,12 @@ def _roadmark_maps(lines: Sequence[Mapping[str, Any]], image_hw: tuple[int, int]
     for line in lines:
         transformed = [((x * scale + left) / stride, (y * scale + top) / stride)
                        for x, y in line["points_xy"]]
-        if flip:
-            transformed = [(out_w - x, y) for x, y in transformed]
         draws[line["class_id"]].line(transformed, fill=255, width=1)
     target = torch.from_numpy(np.stack([np.asarray(mask, dtype=np.float32) / 255.0 for mask in masks]))
+    if flip:
+        # Mirror the rasterized target exactly as the image; out_w - x
+        # shifts the supervision one output pixel to the right.
+        target = torch.flip(target, dims=(-1,))
     valid_2d = torch.zeros((out_h, out_w), dtype=torch.bool)
     right_exclusive = math.floor((image_hw[1] - padding[2]) / stride)
     bottom_exclusive = math.floor((image_hw[0] - padding[3]) / stride)

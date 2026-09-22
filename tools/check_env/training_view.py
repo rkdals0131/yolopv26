@@ -77,6 +77,7 @@ class TrainingViewState:
     loss_history: dict[str, deque[float]] = field(default_factory=lambda: defaultdict(lambda: deque(maxlen=36)))
     validation: dict[str, Any] | None = None
     validation_step: int | None = None
+    evaluation_progress: dict[str, Any] | None = None
     status: str = "데이터 인덱싱과 모델 초기화 중"
     messages: deque[str] = field(default_factory=lambda: deque(maxlen=4))
     raw_tail: deque[str] = field(default_factory=lambda: deque(maxlen=30))
@@ -107,8 +108,15 @@ class TrainingViewState:
             return
         if not isinstance(payload, dict):
             return
+        evaluation = payload.get("evaluation_progress")
+        if isinstance(evaluation, dict):
+            self.evaluation_progress = evaluation
+            scope = "전체" if evaluation["scope"] == "full" else "주기"
+            self.status = f"{scope} 검증 · {evaluation['checkpoint']}"
+            return
         validation = payload.get("validation")
         if isinstance(validation, dict):
+            self.evaluation_progress = None
             self.validation = validation
             self.validation_step = int(validation.get("global_step") or payload.get("step") or self.step)
             self.status = f"step {self.validation_step:,} 검증 완료"
@@ -166,6 +174,10 @@ def _validation_panel(state: TrainingViewState) -> Panel:
     table.add_column(style="dim", no_wrap=True)
     table.add_column(justify="right", no_wrap=True)
     validation = state.validation or {}
+    if validation:
+        scope = "전체" if validation.get("scope") == "full" else "주기"
+        table.add_row("평가 범위", f"{scope} · {validation.get('samples', validation.get('sample_count', '?'))}장")
+        table.add_row("가중치", str(validation.get("checkpoint", "current")))
     if validation.get("elapsed_sec") is not None:
         table.add_row("검증 시간", _duration(float(validation["elapsed_sec"])))
     if state.spec.kind == "pv26":
@@ -195,7 +207,17 @@ def render_training_view(state: TrainingViewState) -> Group:
     eta = None
     if state.samples_per_sec and state.samples_per_sec > 0:
         eta = remaining * spec.logical_batch_size / state.samples_per_sec
-    progress = ProgressBar(total=max(1, spec.stop_step), completed=min(state.step, spec.stop_step), width=None)
+    progress_total, progress_done = max(1, spec.stop_step), min(state.step, spec.stop_step)
+    progress_label = "진행"
+    elapsed_display = state.training_elapsed_sec or elapsed
+    evaluation = state.evaluation_progress
+    if evaluation is not None:
+        progress_total, progress_done = max(1, evaluation["total"]), evaluation["samples"]
+        progress_label = f"검증 {progress_done:,}/{evaluation['total']:,}"
+        elapsed_display = evaluation["elapsed_sec"]
+        eta = (elapsed_display * (progress_total - progress_done) / progress_done
+               if progress_done else None)
+    progress = ProgressBar(total=progress_total, completed=progress_done, width=None)
     header = Table.grid(expand=True, padding=(0, 1))
     header.add_column(style="dim", no_wrap=True)
     header.add_column(overflow="fold")
@@ -203,7 +225,7 @@ def render_training_view(state: TrainingViewState) -> Group:
     header.add_column(justify="right", no_wrap=True)
     header.add_row("실행", f"{spec.kind} / {spec.stage}", "상태", state.status)
     header.add_row("경로", str(spec.output), "목표", f"{state.step:,} / {spec.stop_step:,} step")
-    header.add_row("진행", progress, "경과 / ETA", f"{_duration(state.training_elapsed_sec or elapsed)} / {_duration(eta)}")
+    header.add_row(progress_label, progress, "경과 / ETA", f"{_duration(elapsed_display)} / {_duration(eta)}")
     speed = f"{state.samples_per_sec:.1f} img/s" if state.samples_per_sec is not None else "측정 중"
     micro = state.microbatch_size if state.microbatch_size is not None else "?"
     header.add_row("처리량", speed, "microbatch", str(micro))

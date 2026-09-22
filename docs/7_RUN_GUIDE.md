@@ -20,6 +20,7 @@ python3 tools/check_env.py
 | `F` / `G` | 각각 본체 / SignalAttr TorchScript 내보내기 |
 | `P` | 영상의 관측 JSON과 overlay 생성 |
 | `L` | 실행 당시 설정, 평가 지표와 체크포인트 경로 보기 |
+| `V` | PV26 체크포인트를 저장된 검증 목록 전체로 평가 |
 | `S` | 사용할 YAML 파일의 경로 변경 |
 | `H` / `R` / `Q` | 도움말 / 상태 새로고침 / 종료 |
 
@@ -47,7 +48,9 @@ python3 tools/run_pv26_train.py --config config/pv26.yaml
 
 초기 가중치는 저장소 루트의 `yolo26s.pt`에서 읽는다. 데이터 경로는 설정의 `data.sources`에 추가할 수 있으며, source별 `weight`가 노출 비율을 정한다. `kind: traffic`은 신호등 검출만, `kind: roadmark`는 차선과 정지선만 감독한다.
 
-현재 기본값은 BF16, 논리 배치 32장, 물리 배치 16장, worker 4개다. 논리 배치는 한 번의 optimizer 업데이트에 사용하는 표본 수이며, 물리 배치는 한 번에 GPU에 올리는 표본 수다. OOM이 발생하면 물리 배치를 줄여 같은 논리 배치를 다시 처리한다.
+현재 기본값은 BF16, 논리 배치 32장, 물리 배치 20장, worker 4개다. 논리 배치는 한 번의 optimizer 업데이트에 사용하는 표본 수이며, 물리 배치는 한 번에 GPU에 올리는 표본 수다. OOM이 발생하면 물리 배치를 줄여 같은 논리 배치를 다시 처리한다.
+
+학습률은 backbone `1e-4`, detector head `1e-3`, roadmark decoder `3e-3`이다. `train.roadmark_lr`로 decoder만 독립 조절한다. 이 필드가 없는 이전 설정은 기존처럼 `head_lr`을 사용하며, `E` 재개는 저장된 optimizer와 설정을 복구한다. 새 학습률을 적용하려면 `C` 새 실행 또는 `K` 가중치에서 새 실행을 사용한다.
 
 짧은 연결 시험에는 다음 명령을 사용할 수 있다.
 
@@ -56,6 +59,19 @@ python3 tools/run_pv26_train.py --steps 2 --sample-limit 64
 ```
 
 `--sample-limit`은 source별 원본 수를 제한한다. 본학습에서는 이 옵션을 생략한다. 검증 표본은 source마다 전체 목록에 걸쳐 고르게 선택하며, 물리 배치 크기를 바꿔도 같은 표본을 사용한다.
+
+주기 검증은 기본 200 step마다 source당 1,024장이다. `validation_samples_per_source: 0`이면 주기 검증도 전체 목록을 사용한다. 계획한 `max_steps`에 도달하면 `latest.pt`, `best.pt`, joint의 `best_roadmark.pt`를 저장된 검증 목록 전체로 각각 평가한다. 학습 중 선택에 쓴 표본 점수와 종료 후 전체 점수는 별도로 보존한다.
+
+`best.pt`의 신호등 우선 선택 기준은 유지한다. `best_roadmark.pt`는 도로표식 점열 F1 최고 가중치를 비교용으로 추가 보존하며, 모델 채택 기준을 바꾸지 않는다. 전체 결과는 `validation_full_<가중치>.json`에 저장되고 `L`에서 확인한다. 촬영 구간이 분리된 최종 평가 자료인지 여부는 전체 검증과 별도로 확인해야 한다.
+
+이미 끝난 실행도 재학습 없이 전체 평가할 수 있다. TUI `V` 또는 다음 명령을 사용한다.
+
+```bash
+python3 tools/run_pv26_train.py \
+  --resume-run runs/20260922_013109_joint --evaluate-only best
+```
+
+`--evaluate-only`는 `best`, `latest`, `best_roadmark` 중 하나를 선택한다. 기존 가중치와 학습 진행을 변경하지 않는다. 개발 실행에서 `--sample-limit`으로 검증 목록 자체를 줄였다면 전체 평가는 그 저장된 목록 전체를 의미한다.
 
 ## 재개
 
