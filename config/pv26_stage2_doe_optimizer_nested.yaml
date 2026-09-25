@@ -1,0 +1,188 @@
+experiment:
+  name: 20260923_stage2_doe_optimizer_nested
+  seed: 26
+  validation_samples_per_source: 1024
+  common_eval_run: runs/20260922_1607_joint_lr3x_80k
+  base_overrides:
+    train:
+      detector_loss_schedule: restart
+  resource_images:
+  - 9600
+  - 32000
+  - 128000
+  - 384000
+  promotion_policy: all
+  design:
+    block: optimizer_recipe_nested
+    factors:
+      optimizer_recipe:
+      - adamw_cosine
+      - adamw_constant
+      - prodigy_d0p3
+      - prodigy_d1
+      - prodigy_d3
+    seeds:
+    - 26
+    - 27
+    - 28
+    randomization_seed: 263383
+candidates:
+- name: adamw_cosine_s27
+  seed: 27
+  factors:
+    optimizer_recipe: adamw_cosine
+  overrides:
+    train:
+      optimizer: adamw
+      lr_schedule: cosine
+      stage: joint
+      gradient_strategy: sum
+- name: prodigy_d1_s28
+  seed: 28
+  factors:
+    optimizer_recipe: prodigy_d1
+  overrides:
+    train:
+      optimizer: prodigy
+      lr_schedule: constant
+      prodigy_d_coef: 1.0
+      stage: joint
+      gradient_strategy: sum
+- name: prodigy_d3_s28
+  seed: 28
+  factors:
+    optimizer_recipe: prodigy_d3
+  overrides:
+    train:
+      optimizer: prodigy
+      lr_schedule: constant
+      prodigy_d_coef: 3.0
+      stage: joint
+      gradient_strategy: sum
+- name: prodigy_d0p3_s26
+  seed: 26
+  factors:
+    optimizer_recipe: prodigy_d0p3
+  overrides:
+    train:
+      optimizer: prodigy
+      lr_schedule: constant
+      prodigy_d_coef: 0.3
+      stage: joint
+      gradient_strategy: sum
+- name: adamw_cosine_s28
+  seed: 28
+  factors:
+    optimizer_recipe: adamw_cosine
+  overrides:
+    train:
+      optimizer: adamw
+      lr_schedule: cosine
+      stage: joint
+      gradient_strategy: sum
+- name: adamw_constant_s28
+  seed: 28
+  factors:
+    optimizer_recipe: adamw_constant
+  overrides:
+    train:
+      optimizer: adamw
+      lr_schedule: constant
+      stage: joint
+      gradient_strategy: sum
+- name: prodigy_d0p3_s28
+  seed: 28
+  factors:
+    optimizer_recipe: prodigy_d0p3
+  overrides:
+    train:
+      optimizer: prodigy
+      lr_schedule: constant
+      prodigy_d_coef: 0.3
+      stage: joint
+      gradient_strategy: sum
+- name: adamw_constant_s27
+  seed: 27
+  factors:
+    optimizer_recipe: adamw_constant
+  overrides:
+    train:
+      optimizer: adamw
+      lr_schedule: constant
+      stage: joint
+      gradient_strategy: sum
+- name: prodigy_d1_s26
+  seed: 26
+  factors:
+    optimizer_recipe: prodigy_d1
+  overrides:
+    train:
+      optimizer: prodigy
+      lr_schedule: constant
+      prodigy_d_coef: 1.0
+      stage: joint
+      gradient_strategy: sum
+- name: prodigy_d3_s26
+  seed: 26
+  factors:
+    optimizer_recipe: prodigy_d3
+  overrides:
+    train:
+      optimizer: prodigy
+      lr_schedule: constant
+      prodigy_d_coef: 3.0
+      stage: joint
+      gradient_strategy: sum
+- name: prodigy_d0p3_s27
+  seed: 27
+  factors:
+    optimizer_recipe: prodigy_d0p3
+  overrides:
+    train:
+      optimizer: prodigy
+      lr_schedule: constant
+      prodigy_d_coef: 0.3
+      stage: joint
+      gradient_strategy: sum
+- name: adamw_cosine_s26
+  seed: 26
+  factors:
+    optimizer_recipe: adamw_cosine
+  overrides:
+    train:
+      optimizer: adamw
+      lr_schedule: cosine
+      stage: joint
+      gradient_strategy: sum
+- name: adamw_constant_s26
+  seed: 26
+  factors:
+    optimizer_recipe: adamw_constant
+  overrides:
+    train:
+      optimizer: adamw
+      lr_schedule: constant
+      stage: joint
+      gradient_strategy: sum
+- name: prodigy_d3_s27
+  seed: 27
+  factors:
+    optimizer_recipe: prodigy_d3
+  overrides:
+    train:
+      optimizer: prodigy
+      lr_schedule: constant
+      prodigy_d_coef: 3.0
+      stage: joint
+      gradient_strategy: sum
+- name: prodigy_d1_s27
+  seed: 27
+  factors:
+    optimizer_recipe: prodigy_d1
+  overrides:
+    train:
+      optimizer: prodigy
+      lr_schedule: constant
+      prodigy_d_coef: 1.0
+      stage: joint
+      gradient_strategy: sum

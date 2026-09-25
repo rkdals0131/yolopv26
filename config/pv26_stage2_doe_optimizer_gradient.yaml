@@ -1,0 +1,336 @@
+experiment:
+  name: 20260923_stage2_doe_optimizer_gradient
+  seed: 26
+  validation_samples_per_source: 1024
+  common_eval_run: runs/20260922_1607_joint_lr3x_80k
+  base_overrides:
+    train:
+      detector_loss_schedule: restart
+  resource_images:
+  - 9600
+  - 32000
+  - 128000
+  - 384000
+  promotion_policy: all
+  design:
+    block: optimizer_2x_gradient_3
+    factors:
+      optimizer_recipe:
+      - adamw_cosine
+      - schedulefree
+      gradient_strategy:
+      - sum
+      - pcgrad
+      - gradnorm
+    seeds:
+    - 26
+    - 27
+    - 28
+    randomization_seed: 263270
+candidates:
+- name: adamw_cosine_pcgrad_s28
+  seed: 28
+  factors:
+    optimizer_recipe: adamw_cosine
+    gradient_strategy: pcgrad
+  overrides:
+    train:
+      optimizer: adamw
+      lr_schedule: cosine
+      stage: joint
+      microbatch_size: 8
+      backbone_lr: 3.0e-05
+      head_lr: 0.0003
+      roadmark_lr: 0.0009
+      gradient_strategy: pcgrad
+      gradnorm_alpha: 1.5
+- name: schedulefree_pcgrad_s27
+  seed: 27
+  factors:
+    optimizer_recipe: schedulefree
+    gradient_strategy: pcgrad
+  overrides:
+    train:
+      optimizer: schedulefree_adamw
+      lr_schedule: constant
+      schedulefree_warmup_steps: 50
+      schedulefree_bn_samples_per_source: 32
+      stage: joint
+      microbatch_size: 8
+      backbone_lr: 3.0e-05
+      head_lr: 0.0003
+      roadmark_lr: 0.0009
+      gradient_strategy: pcgrad
+      gradnorm_alpha: 1.5
+- name: adamw_cosine_sum_s26
+  seed: 26
+  factors:
+    optimizer_recipe: adamw_cosine
+    gradient_strategy: sum
+  overrides:
+    train:
+      optimizer: adamw
+      lr_schedule: cosine
+      stage: joint
+      microbatch_size: 8
+      backbone_lr: 3.0e-05
+      head_lr: 0.0003
+      roadmark_lr: 0.0009
+      gradient_strategy: sum
+      gradnorm_alpha: 1.5
+- name: schedulefree_gradnorm_s26
+  seed: 26
+  factors:
+    optimizer_recipe: schedulefree
+    gradient_strategy: gradnorm
+  overrides:
+    train:
+      optimizer: schedulefree_adamw
+      lr_schedule: constant
+      schedulefree_warmup_steps: 50
+      schedulefree_bn_samples_per_source: 32
+      stage: joint
+      microbatch_size: 8
+      backbone_lr: 3.0e-05
+      head_lr: 0.0003
+      roadmark_lr: 0.0009
+      gradient_strategy: gradnorm
+      gradnorm_alpha: 1.5
+- name: schedulefree_pcgrad_s26
+  seed: 26
+  factors:
+    optimizer_recipe: schedulefree
+    gradient_strategy: pcgrad
+  overrides:
+    train:
+      optimizer: schedulefree_adamw
+      lr_schedule: constant
+      schedulefree_warmup_steps: 50
+      schedulefree_bn_samples_per_source: 32
+      stage: joint
+      microbatch_size: 8
+      backbone_lr: 3.0e-05
+      head_lr: 0.0003
+      roadmark_lr: 0.0009
+      gradient_strategy: pcgrad
+      gradnorm_alpha: 1.5
+- name: adamw_cosine_gradnorm_s26
+  seed: 26
+  factors:
+    optimizer_recipe: adamw_cosine
+    gradient_strategy: gradnorm
+  overrides:
+    train:
+      optimizer: adamw
+      lr_schedule: cosine
+      stage: joint
+      microbatch_size: 8
+      backbone_lr: 3.0e-05
+      head_lr: 0.0003
+      roadmark_lr: 0.0009
+      gradient_strategy: gradnorm
+      gradnorm_alpha: 1.5
+- name: adamw_cosine_sum_s27
+  seed: 27
+  factors:
+    optimizer_recipe: adamw_cosine
+    gradient_strategy: sum
+  overrides:
+    train:
+      optimizer: adamw
+      lr_schedule: cosine
+      stage: joint
+      microbatch_size: 8
+      backbone_lr: 3.0e-05
+      head_lr: 0.0003
+      roadmark_lr: 0.0009
+      gradient_strategy: sum
+      gradnorm_alpha: 1.5
+- name: schedulefree_gradnorm_s27
+  seed: 27
+  factors:
+    optimizer_recipe: schedulefree
+    gradient_strategy: gradnorm
+  overrides:
+    train:
+      optimizer: schedulefree_adamw
+      lr_schedule: constant
+      schedulefree_warmup_steps: 50
+      schedulefree_bn_samples_per_source: 32
+      stage: joint
+      microbatch_size: 8
+      backbone_lr: 3.0e-05
+      head_lr: 0.0003
+      roadmark_lr: 0.0009
+      gradient_strategy: gradnorm
+      gradnorm_alpha: 1.5
+- name: adamw_cosine_pcgrad_s27
+  seed: 27
+  factors:
+    optimizer_recipe: adamw_cosine
+    gradient_strategy: pcgrad
+  overrides:
+    train:
+      optimizer: adamw
+      lr_schedule: cosine
+      stage: joint
+      microbatch_size: 8
+      backbone_lr: 3.0e-05
+      head_lr: 0.0003
+      roadmark_lr: 0.0009
+      gradient_strategy: pcgrad
+      gradnorm_alpha: 1.5
+- name: adamw_cosine_gradnorm_s27
+  seed: 27
+  factors:
+    optimizer_recipe: adamw_cosine
+    gradient_strategy: gradnorm
+  overrides:
+    train:
+      optimizer: adamw
+      lr_schedule: cosine
+      stage: joint
+      microbatch_size: 8
+      backbone_lr: 3.0e-05
+      head_lr: 0.0003
+      roadmark_lr: 0.0009
+      gradient_strategy: gradnorm
+      gradnorm_alpha: 1.5
+- name: adamw_cosine_pcgrad_s26
+  seed: 26
+  factors:
+    optimizer_recipe: adamw_cosine
+    gradient_strategy: pcgrad
+  overrides:
+    train:
+      optimizer: adamw
+      lr_schedule: cosine
+      stage: joint
+      microbatch_size: 8
+      backbone_lr: 3.0e-05
+      head_lr: 0.0003
+      roadmark_lr: 0.0009
+      gradient_strategy: pcgrad
+      gradnorm_alpha: 1.5
+- name: schedulefree_pcgrad_s28
+  seed: 28
+  factors:
+    optimizer_recipe: schedulefree
+    gradient_strategy: pcgrad
+  overrides:
+    train:
+      optimizer: schedulefree_adamw
+      lr_schedule: constant
+      schedulefree_warmup_steps: 50
+      schedulefree_bn_samples_per_source: 32
+      stage: joint
+      microbatch_size: 8
+      backbone_lr: 3.0e-05
+      head_lr: 0.0003
+      roadmark_lr: 0.0009
+      gradient_strategy: pcgrad
+      gradnorm_alpha: 1.5
+- name: schedulefree_sum_s28
+  seed: 28
+  factors:
+    optimizer_recipe: schedulefree
+    gradient_strategy: sum
+  overrides:
+    train:
+      optimizer: schedulefree_adamw
+      lr_schedule: constant
+      schedulefree_warmup_steps: 50
+      schedulefree_bn_samples_per_source: 32
+      stage: joint
+      microbatch_size: 8
+      backbone_lr: 3.0e-05
+      head_lr: 0.0003
+      roadmark_lr: 0.0009
+      gradient_strategy: sum
+      gradnorm_alpha: 1.5
+- name: schedulefree_sum_s26
+  seed: 26
+  factors:
+    optimizer_recipe: schedulefree
+    gradient_strategy: sum
+  overrides:
+    train:
+      optimizer: schedulefree_adamw
+      lr_schedule: constant
+      schedulefree_warmup_steps: 50
+      schedulefree_bn_samples_per_source: 32
+      stage: joint
+      microbatch_size: 8
+      backbone_lr: 3.0e-05
+      head_lr: 0.0003
+      roadmark_lr: 0.0009
+      gradient_strategy: sum
+      gradnorm_alpha: 1.5
+- name: adamw_cosine_sum_s28
+  seed: 28
+  factors:
+    optimizer_recipe: adamw_cosine
+    gradient_strategy: sum
+  overrides:
+    train:
+      optimizer: adamw
+      lr_schedule: cosine
+      stage: joint
+      microbatch_size: 8
+      backbone_lr: 3.0e-05
+      head_lr: 0.0003
+      roadmark_lr: 0.0009
+      gradient_strategy: sum
+      gradnorm_alpha: 1.5
+- name: schedulefree_sum_s27
+  seed: 27
+  factors:
+    optimizer_recipe: schedulefree
+    gradient_strategy: sum
+  overrides:
+    train:
+      optimizer: schedulefree_adamw
+      lr_schedule: constant
+      schedulefree_warmup_steps: 50
+      schedulefree_bn_samples_per_source: 32
+      stage: joint
+      microbatch_size: 8
+      backbone_lr: 3.0e-05
+      head_lr: 0.0003
+      roadmark_lr: 0.0009
+      gradient_strategy: sum
+      gradnorm_alpha: 1.5
+- name: adamw_cosine_gradnorm_s28
+  seed: 28
+  factors:
+    optimizer_recipe: adamw_cosine
+    gradient_strategy: gradnorm
+  overrides:
+    train:
+      optimizer: adamw
+      lr_schedule: cosine
+      stage: joint
+      microbatch_size: 8
+      backbone_lr: 3.0e-05
+      head_lr: 0.0003
+      roadmark_lr: 0.0009
+      gradient_strategy: gradnorm
+      gradnorm_alpha: 1.5
+- name: schedulefree_gradnorm_s28
+  seed: 28
+  factors:
+    optimizer_recipe: schedulefree
+    gradient_strategy: gradnorm
+  overrides:
+    train:
+      optimizer: schedulefree_adamw
+      lr_schedule: constant
+      schedulefree_warmup_steps: 50
+      schedulefree_bn_samples_per_source: 32
+      stage: joint
+      microbatch_size: 8
+      backbone_lr: 3.0e-05
+      head_lr: 0.0003
+      roadmark_lr: 0.0009
+      gradient_strategy: gradnorm
+      gradnorm_alpha: 1.5

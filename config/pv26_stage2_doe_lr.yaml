@@ -1,0 +1,328 @@
+experiment:
+  name: 20260923_stage2_doe_lr
+  seed: 26
+  validation_samples_per_source: 1024
+  common_eval_run: runs/20260922_1607_joint_lr3x_80k
+  base_overrides:
+    train:
+      detector_loss_schedule: restart
+  resource_images:
+  - 9600
+  - 32000
+  - 128000
+  - 384000
+  promotion_policy: all
+  design:
+    block: lr_3x3
+    factors:
+      body_lr:
+      - l
+      - m
+      - h
+      roadmark_lr:
+      - l
+      - m
+      - h
+    seeds:
+    - 26
+    - 27
+    - 28
+    randomization_seed: 261462
+candidates:
+- name: body_h_road_m_s27
+  seed: 27
+  factors:
+    body_lr: h
+    roadmark_lr: m
+  overrides:
+    train:
+      stage: joint
+      backbone_lr: 9.0e-05
+      head_lr: 0.0003
+      roadmark_lr: 0.0009
+- name: body_m_road_h_s28
+  seed: 28
+  factors:
+    body_lr: m
+    roadmark_lr: h
+  overrides:
+    train:
+      stage: joint
+      backbone_lr: 3.0e-05
+      head_lr: 0.0003
+      roadmark_lr: 0.0027
+- name: body_l_road_h_s28
+  seed: 28
+  factors:
+    body_lr: l
+    roadmark_lr: h
+  overrides:
+    train:
+      stage: joint
+      backbone_lr: 9.0e-06
+      head_lr: 0.0003
+      roadmark_lr: 0.0027
+- name: body_h_road_l_s28
+  seed: 28
+  factors:
+    body_lr: h
+    roadmark_lr: l
+  overrides:
+    train:
+      stage: joint
+      backbone_lr: 9.0e-05
+      head_lr: 0.0003
+      roadmark_lr: 0.00027
+- name: body_h_road_h_s27
+  seed: 27
+  factors:
+    body_lr: h
+    roadmark_lr: h
+  overrides:
+    train:
+      stage: joint
+      backbone_lr: 9.0e-05
+      head_lr: 0.0003
+      roadmark_lr: 0.0027
+- name: body_h_road_l_s26
+  seed: 26
+  factors:
+    body_lr: h
+    roadmark_lr: l
+  overrides:
+    train:
+      stage: joint
+      backbone_lr: 9.0e-05
+      head_lr: 0.0003
+      roadmark_lr: 0.00027
+- name: body_m_road_m_s26
+  seed: 26
+  factors:
+    body_lr: m
+    roadmark_lr: m
+  overrides:
+    train:
+      stage: joint
+      backbone_lr: 3.0e-05
+      head_lr: 0.0003
+      roadmark_lr: 0.0009
+- name: body_h_road_m_s28
+  seed: 28
+  factors:
+    body_lr: h
+    roadmark_lr: m
+  overrides:
+    train:
+      stage: joint
+      backbone_lr: 9.0e-05
+      head_lr: 0.0003
+      roadmark_lr: 0.0009
+- name: body_h_road_l_s27
+  seed: 27
+  factors:
+    body_lr: h
+    roadmark_lr: l
+  overrides:
+    train:
+      stage: joint
+      backbone_lr: 9.0e-05
+      head_lr: 0.0003
+      roadmark_lr: 0.00027
+- name: body_m_road_l_s27
+  seed: 27
+  factors:
+    body_lr: m
+    roadmark_lr: l
+  overrides:
+    train:
+      stage: joint
+      backbone_lr: 3.0e-05
+      head_lr: 0.0003
+      roadmark_lr: 0.00027
+- name: body_l_road_m_s28
+  seed: 28
+  factors:
+    body_lr: l
+    roadmark_lr: m
+  overrides:
+    train:
+      stage: joint
+      backbone_lr: 9.0e-06
+      head_lr: 0.0003
+      roadmark_lr: 0.0009
+- name: body_l_road_m_s26
+  seed: 26
+  factors:
+    body_lr: l
+    roadmark_lr: m
+  overrides:
+    train:
+      stage: joint
+      backbone_lr: 9.0e-06
+      head_lr: 0.0003
+      roadmark_lr: 0.0009
+- name: body_l_road_h_s27
+  seed: 27
+  factors:
+    body_lr: l
+    roadmark_lr: h
+  overrides:
+    train:
+      stage: joint
+      backbone_lr: 9.0e-06
+      head_lr: 0.0003
+      roadmark_lr: 0.0027
+- name: body_m_road_m_s27
+  seed: 27
+  factors:
+    body_lr: m
+    roadmark_lr: m
+  overrides:
+    train:
+      stage: joint
+      backbone_lr: 3.0e-05
+      head_lr: 0.0003
+      roadmark_lr: 0.0009
+- name: body_m_road_l_s28
+  seed: 28
+  factors:
+    body_lr: m
+    roadmark_lr: l
+  overrides:
+    train:
+      stage: joint
+      backbone_lr: 3.0e-05
+      head_lr: 0.0003
+      roadmark_lr: 0.00027
+- name: body_h_road_h_s28
+  seed: 28
+  factors:
+    body_lr: h
+    roadmark_lr: h
+  overrides:
+    train:
+      stage: joint
+      backbone_lr: 9.0e-05
+      head_lr: 0.0003
+      roadmark_lr: 0.0027
+- name: body_l_road_h_s26
+  seed: 26
+  factors:
+    body_lr: l
+    roadmark_lr: h
+  overrides:
+    train:
+      stage: joint
+      backbone_lr: 9.0e-06
+      head_lr: 0.0003
+      roadmark_lr: 0.0027
+- name: body_l_road_l_s27
+  seed: 27
+  factors:
+    body_lr: l
+    roadmark_lr: l
+  overrides:
+    train:
+      stage: joint
+      backbone_lr: 9.0e-06
+      head_lr: 0.0003
+      roadmark_lr: 0.00027
+- name: body_h_road_h_s26
+  seed: 26
+  factors:
+    body_lr: h
+    roadmark_lr: h
+  overrides:
+    train:
+      stage: joint
+      backbone_lr: 9.0e-05
+      head_lr: 0.0003
+      roadmark_lr: 0.0027
+- name: body_l_road_l_s28
+  seed: 28
+  factors:
+    body_lr: l
+    roadmark_lr: l
+  overrides:
+    train:
+      stage: joint
+      backbone_lr: 9.0e-06
+      head_lr: 0.0003
+      roadmark_lr: 0.00027
+- name: body_m_road_h_s27
+  seed: 27
+  factors:
+    body_lr: m
+    roadmark_lr: h
+  overrides:
+    train:
+      stage: joint
+      backbone_lr: 3.0e-05
+      head_lr: 0.0003
+      roadmark_lr: 0.0027
+- name: body_l_road_m_s27
+  seed: 27
+  factors:
+    body_lr: l
+    roadmark_lr: m
+  overrides:
+    train:
+      stage: joint
+      backbone_lr: 9.0e-06
+      head_lr: 0.0003
+      roadmark_lr: 0.0009
+- name: body_m_road_m_s28
+  seed: 28
+  factors:
+    body_lr: m
+    roadmark_lr: m
+  overrides:
+    train:
+      stage: joint
+      backbone_lr: 3.0e-05
+      head_lr: 0.0003
+      roadmark_lr: 0.0009
+- name: body_m_road_h_s26
+  seed: 26
+  factors:
+    body_lr: m
+    roadmark_lr: h
+  overrides:
+    train:
+      stage: joint
+      backbone_lr: 3.0e-05
+      head_lr: 0.0003
+      roadmark_lr: 0.0027
+- name: body_m_road_l_s26
+  seed: 26
+  factors:
+    body_lr: m
+    roadmark_lr: l
+  overrides:
+    train:
+      stage: joint
+      backbone_lr: 3.0e-05
+      head_lr: 0.0003
+      roadmark_lr: 0.00027
+- name: body_h_road_m_s26
+  seed: 26
+  factors:
+    body_lr: h
+    roadmark_lr: m
+  overrides:
+    train:
+      stage: joint
+      backbone_lr: 9.0e-05
+      head_lr: 0.0003
+      roadmark_lr: 0.0009
+- name: body_l_road_l_s26
+  seed: 26
+  factors:
+    body_lr: l
+    roadmark_lr: l
+  overrides:
+    train:
+      stage: joint
+      backbone_lr: 9.0e-06
+      head_lr: 0.0003
+      roadmark_lr: 0.00027

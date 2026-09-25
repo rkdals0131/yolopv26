@@ -2,7 +2,7 @@
 
 카메라 영상에서 차량용 신호등과 보행자용 신호등을 구분하고 점등 상태를 읽는다. 흰 차선, 노란 차선, 정지선은 원본 영상 좌표의 점열로 출력한다.
 
-공유 YOLO26-s 본체와 도로표식 디코더, SignalAttr를 이 저장소에서 학습하고 실행한다. AIHub 원본을 읽는 피더, mixed precision, OOM 재시도, 체크포인트 재개를 구현했다. 짧은 GPU 실행으로 연결을 확인했으며, 본학습과 배포 성능 평가는 남아 있다.
+공유 YOLO26-s 본체와 도로표식 디코더, SignalAttr를 이 저장소에서 학습하고 실행한다. AIHub 원본을 읽는 피더, mixed precision, OOM 재시도, 체크포인트 재개를 구현했다. 첫 PV26 joint 80,000 step 학습과 AIHub 전체 검증을 완료했으며, 제품용 SignalAttr 장기 학습과 실차 최종 평가는 남아 있다.
 
 ## 실행
 
@@ -27,6 +27,8 @@ SignalAttr의 crop 생성과 학습 설정은 [signal_attr.yaml](config/signal_a
 - [모델 구조](docs/2_SYSTEM_ARCHITECTURE.md)
 - [학습과 자원 관리](docs/6_TRAINING_AND_EVALUATION.md)
 - [다음 작업](docs/00C_NEXT_GATES.md)
+- [80k 이후 연구·실험 설계와 인수인계](docs/20260923_PV26_STAGE2_RESEARCH.md)
+- [수동주행 MCAP 최종 평가 설계](docs/20260923_MCAP_FINAL_EVALUATION_PROTOCOL.md)
 
 [SignalAttr](models/signal_attr/README.md)의 기준 가중치는 저장소에 포함한다. 본체 초기화에는 저장소 루트의 `yolo26s.pt`를 사용한다. 학습한 체크포인트는 초기 가중치 파일 없이 다시 불러올 수 있다.
 

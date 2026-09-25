@@ -770,7 +770,8 @@ class FocusedTrainer:
         *,
         max_steps: int,
         planned_steps: int | None = None,
-        on_step: Callable[["FocusedTrainer", dict[str, Any]], None] | None = None,
+        on_step: Callable[["FocusedTrainer", dict[str, Any]], bool | None] | None = None,
+        on_start: Callable[["FocusedTrainer"], None] | None = None,
     ) -> dict[str, Any]:
         """Train to a completed optimizer-step count, saving at safe stop points."""
         if max_steps < self.global_step:
@@ -796,6 +797,8 @@ class FocusedTrainer:
             previous_handlers[signum] = signal.getsignal(signum)
             signal.signal(signum, request_stop)
         try:
+            if on_start is not None:
+                on_start(self)
             iterator = iter(loader)
             while self.global_step < max_steps and not self._stop_requested:
                 batch_wait_started = time.monotonic()
@@ -808,7 +811,7 @@ class FocusedTrainer:
                 if completed:
                     self._set_progress(planned_steps)
                 if completed and on_step is not None:
-                    on_step(self, {
+                    refresh_loader = on_step(self, {
                         "global_step": self.global_step,
                         "sampler_position": int(self.sampler.position),
                         "microbatch_size": self.microbatch_size,
@@ -819,6 +822,10 @@ class FocusedTrainer:
                         "batch_wait_sec": batch_wait_sec,
                         "update_wall_sec": update_wall_sec,
                     })
+                    if refresh_loader:
+                        # Drop prefetched batches from the previous sampling pools.
+                        # The sampler restarts at its committed position.
+                        iterator = iter(loader)
                 if self._stop_requested:
                     break
             if not self._unsafe_state and self.consecutive_failures == 0:

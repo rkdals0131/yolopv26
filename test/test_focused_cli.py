@@ -76,6 +76,22 @@ def test_focused_run_config_preserves_pre_checkpoint_initializer(tmp_path: Path)
         assert resumed["initial_checkpoint"] == str(initial.resolve())
 
 
+def test_stage2_preset_keeps_completed_weights_and_saved_membership(tmp_path: Path) -> None:
+    args = argparse.Namespace(
+        resume_run=None, initial_checkpoint=None, index_run=None, stage=None,
+        sample_limit=None, config=focused_cli.REPO_ROOT / "config/pv26_stage2.yaml",
+        device=None, num_workers=None, microbatch_size=None, seed=None,
+        detector_loss_schedule=None, backbone_lr=None, head_lr=None, roadmark_lr=None,
+    )
+    cfg = focused_cli._configuration(args, tmp_path)
+    baseline = focused_cli.REPO_ROOT / "runs/20260922_1607_joint_lr3x_80k"
+    assert cfg["initial_checkpoint"] == str(baseline / "checkpoints/latest.pt")
+    assert cfg["data"]["index_run"] == str(baseline)
+    assert cfg["train"]["detector_loss_schedule"] == "mature"
+    assert cfg["train"]["max_steps"] == 12000
+    assert cfg["train"]["roadmark_lr"] == 0.0009
+
+
 def test_signal_run_config_reaches_builder_after_early_restart(tmp_path: Path) -> None:
     dataset = tmp_path / "crops"
     initial = tmp_path / "initial_signal.pt"

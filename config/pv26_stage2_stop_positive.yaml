@@ -1,0 +1,55 @@
+# Fine-tune the roadmark decoder on images with a labeled stop line.
+# All lane labels in those images remain supervised. The complete validation
+# membership is retained in the index run.
+model:
+  weights: yolo26s.pt
+  variant: s
+  roadmark_width: 64
+  image_hw: [608, 800]
+
+data:
+  sources:
+    - name: traffic_aihub
+      kind: traffic
+      root: seg_dataset/AIHUB/신호등-도로표지판 인지 영상(수도권)
+      weight: 1.0
+    - name: roadmark_aihub
+      kind: roadmark
+      root: seg_dataset/AIHUB/차선-횡단보도 인지 영상(수도권)
+      weight: 1.0
+  seed: 26
+  sampling_strategy: random_with_replacement
+  num_workers: 4
+  prefetch_factor: 2
+  pin_memory: true
+  augment: true
+  index_run: runs/20260924_stop_positive_index
+  roadmark_target_sigma_cells: 0.5
+
+train:
+  device: cuda:0
+  amp_dtype: bfloat16
+  stage: roadmark
+  logical_batch_size: 32
+  microbatch_size: 20
+  max_steps: 12000
+  optimizer: adamw
+  lr_schedule: cosine
+  gradient_strategy: sum
+  roadmark_dice: squared
+  backbone_lr: 0.00003
+  head_lr: 0.0003
+  roadmark_lr: 0.0009
+  det_loss_weight: 1.0
+  roadmark_loss_weight: 1.0
+  weight_decay: 0.0001
+  grad_clip_norm: 5.0
+  checkpoint_interval_sec: 600
+  max_consecutive_failures: 3
+  log_every: 20
+  validation_every: 200
+  validation_samples_per_source: 1024
+  geometry_tolerance_px: 8.0
+  output_root: runs
+
+initial_checkpoint: runs/20260922_1607_joint_lr3x_80k/checkpoints/latest.pt

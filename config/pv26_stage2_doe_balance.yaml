@@ -1,0 +1,355 @@
+experiment:
+  name: 20260923_stage2_doe_balance
+  seed: 26
+  validation_samples_per_source: 1024
+  common_eval_run: runs/20260922_1607_joint_lr3x_80k
+  base_overrides:
+    train:
+      detector_loss_schedule: restart
+  resource_images:
+  - 9600
+  - 32000
+  - 128000
+  - 384000
+  promotion_policy: all
+  design:
+    block: source_ratio_3x_loss_weight_3
+    factors:
+      source_ratio:
+      - traffic2
+      - equal
+      - roadmark2
+      roadmark_loss_weight:
+      - half
+      - one
+      - double
+    seeds:
+    - 26
+    - 27
+    - 28
+    randomization_seed: 263917
+candidates:
+- name: traffic2_loss_half_s27
+  seed: 27
+  factors:
+    source_ratio: traffic2
+    roadmark_loss_weight: half
+  source_weights:
+  - 2.0
+  - 1.0
+  overrides:
+    train:
+      stage: joint
+      roadmark_loss_weight: 0.5
+- name: traffic2_loss_one_s27
+  seed: 27
+  factors:
+    source_ratio: traffic2
+    roadmark_loss_weight: one
+  source_weights:
+  - 2.0
+  - 1.0
+  overrides:
+    train:
+      stage: joint
+      roadmark_loss_weight: 1.0
+- name: roadmark2_loss_one_s26
+  seed: 26
+  factors:
+    source_ratio: roadmark2
+    roadmark_loss_weight: one
+  source_weights:
+  - 1.0
+  - 2.0
+  overrides:
+    train:
+      stage: joint
+      roadmark_loss_weight: 1.0
+- name: roadmark2_loss_half_s27
+  seed: 27
+  factors:
+    source_ratio: roadmark2
+    roadmark_loss_weight: half
+  source_weights:
+  - 1.0
+  - 2.0
+  overrides:
+    train:
+      stage: joint
+      roadmark_loss_weight: 0.5
+- name: traffic2_loss_one_s26
+  seed: 26
+  factors:
+    source_ratio: traffic2
+    roadmark_loss_weight: one
+  source_weights:
+  - 2.0
+  - 1.0
+  overrides:
+    train:
+      stage: joint
+      roadmark_loss_weight: 1.0
+- name: equal_loss_half_s28
+  seed: 28
+  factors:
+    source_ratio: equal
+    roadmark_loss_weight: half
+  source_weights:
+  - 1.0
+  - 1.0
+  overrides:
+    train:
+      stage: joint
+      roadmark_loss_weight: 0.5
+- name: traffic2_loss_double_s27
+  seed: 27
+  factors:
+    source_ratio: traffic2
+    roadmark_loss_weight: double
+  source_weights:
+  - 2.0
+  - 1.0
+  overrides:
+    train:
+      stage: joint
+      roadmark_loss_weight: 2.0
+- name: equal_loss_one_s26
+  seed: 26
+  factors:
+    source_ratio: equal
+    roadmark_loss_weight: one
+  source_weights:
+  - 1.0
+  - 1.0
+  overrides:
+    train:
+      stage: joint
+      roadmark_loss_weight: 1.0
+- name: equal_loss_half_s26
+  seed: 26
+  factors:
+    source_ratio: equal
+    roadmark_loss_weight: half
+  source_weights:
+  - 1.0
+  - 1.0
+  overrides:
+    train:
+      stage: joint
+      roadmark_loss_weight: 0.5
+- name: equal_loss_double_s27
+  seed: 27
+  factors:
+    source_ratio: equal
+    roadmark_loss_weight: double
+  source_weights:
+  - 1.0
+  - 1.0
+  overrides:
+    train:
+      stage: joint
+      roadmark_loss_weight: 2.0
+- name: equal_loss_one_s28
+  seed: 28
+  factors:
+    source_ratio: equal
+    roadmark_loss_weight: one
+  source_weights:
+  - 1.0
+  - 1.0
+  overrides:
+    train:
+      stage: joint
+      roadmark_loss_weight: 1.0
+- name: equal_loss_double_s28
+  seed: 28
+  factors:
+    source_ratio: equal
+    roadmark_loss_weight: double
+  source_weights:
+  - 1.0
+  - 1.0
+  overrides:
+    train:
+      stage: joint
+      roadmark_loss_weight: 2.0
+- name: traffic2_loss_one_s28
+  seed: 28
+  factors:
+    source_ratio: traffic2
+    roadmark_loss_weight: one
+  source_weights:
+  - 2.0
+  - 1.0
+  overrides:
+    train:
+      stage: joint
+      roadmark_loss_weight: 1.0
+- name: equal_loss_double_s26
+  seed: 26
+  factors:
+    source_ratio: equal
+    roadmark_loss_weight: double
+  source_weights:
+  - 1.0
+  - 1.0
+  overrides:
+    train:
+      stage: joint
+      roadmark_loss_weight: 2.0
+- name: roadmark2_loss_half_s26
+  seed: 26
+  factors:
+    source_ratio: roadmark2
+    roadmark_loss_weight: half
+  source_weights:
+  - 1.0
+  - 2.0
+  overrides:
+    train:
+      stage: joint
+      roadmark_loss_weight: 0.5
+- name: traffic2_loss_double_s28
+  seed: 28
+  factors:
+    source_ratio: traffic2
+    roadmark_loss_weight: double
+  source_weights:
+  - 2.0
+  - 1.0
+  overrides:
+    train:
+      stage: joint
+      roadmark_loss_weight: 2.0
+- name: traffic2_loss_double_s26
+  seed: 26
+  factors:
+    source_ratio: traffic2
+    roadmark_loss_weight: double
+  source_weights:
+  - 2.0
+  - 1.0
+  overrides:
+    train:
+      stage: joint
+      roadmark_loss_weight: 2.0
+- name: traffic2_loss_half_s28
+  seed: 28
+  factors:
+    source_ratio: traffic2
+    roadmark_loss_weight: half
+  source_weights:
+  - 2.0
+  - 1.0
+  overrides:
+    train:
+      stage: joint
+      roadmark_loss_weight: 0.5
+- name: equal_loss_half_s27
+  seed: 27
+  factors:
+    source_ratio: equal
+    roadmark_loss_weight: half
+  source_weights:
+  - 1.0
+  - 1.0
+  overrides:
+    train:
+      stage: joint
+      roadmark_loss_weight: 0.5
+- name: equal_loss_one_s27
+  seed: 27
+  factors:
+    source_ratio: equal
+    roadmark_loss_weight: one
+  source_weights:
+  - 1.0
+  - 1.0
+  overrides:
+    train:
+      stage: joint
+      roadmark_loss_weight: 1.0
+- name: traffic2_loss_half_s26
+  seed: 26
+  factors:
+    source_ratio: traffic2
+    roadmark_loss_weight: half
+  source_weights:
+  - 2.0
+  - 1.0
+  overrides:
+    train:
+      stage: joint
+      roadmark_loss_weight: 0.5
+- name: roadmark2_loss_double_s27
+  seed: 27
+  factors:
+    source_ratio: roadmark2
+    roadmark_loss_weight: double
+  source_weights:
+  - 1.0
+  - 2.0
+  overrides:
+    train:
+      stage: joint
+      roadmark_loss_weight: 2.0
+- name: roadmark2_loss_half_s28
+  seed: 28
+  factors:
+    source_ratio: roadmark2
+    roadmark_loss_weight: half
+  source_weights:
+  - 1.0
+  - 2.0
+  overrides:
+    train:
+      stage: joint
+      roadmark_loss_weight: 0.5
+- name: roadmark2_loss_double_s26
+  seed: 26
+  factors:
+    source_ratio: roadmark2
+    roadmark_loss_weight: double
+  source_weights:
+  - 1.0
+  - 2.0
+  overrides:
+    train:
+      stage: joint
+      roadmark_loss_weight: 2.0
+- name: roadmark2_loss_one_s28
+  seed: 28
+  factors:
+    source_ratio: roadmark2
+    roadmark_loss_weight: one
+  source_weights:
+  - 1.0
+  - 2.0
+  overrides:
+    train:
+      stage: joint
+      roadmark_loss_weight: 1.0
+- name: roadmark2_loss_one_s27
+  seed: 27
+  factors:
+    source_ratio: roadmark2
+    roadmark_loss_weight: one
+  source_weights:
+  - 1.0
+  - 2.0
+  overrides:
+    train:
+      stage: joint
+      roadmark_loss_weight: 1.0
+- name: roadmark2_loss_double_s28
+  seed: 28
+  factors:
+    source_ratio: roadmark2
+    roadmark_loss_weight: double
+  source_weights:
+  - 1.0
+  - 2.0
+  overrides:
+    train:
+      stage: joint
+      roadmark_loss_weight: 2.0

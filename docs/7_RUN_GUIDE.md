@@ -77,12 +77,56 @@ python3 tools/run_pv26_train.py \
 ## 재개
 
 ```bash
-python3 tools/run_pv26_train.py --resume-run /home/user1/Storage/ROS2_Workspace_offload/yolopv26/실행폴더
+python3 tools/run_pv26_train.py --resume-run /home/kai/yolopv26/runs/실행폴더
 ```
 
 `--steps N`을 함께 주면 N번 더 업데이트한 뒤 저장하고 종료한다. 전체 학습률 일정은 처음 설정한 `max_steps`를 유지한다. 재개할 때는 저장된 데이터 목록과 학습 설정을 사용한다. worker 수와 물리 배치는 실행 환경에 맞춰 조정할 수 있다.
 
 SIGINT 또는 SIGTERM을 받으면 진행 중인 step을 마친 뒤 저장한다. 강제 종료되면 마지막 완료된 체크포인트에서 재개한다. 같은 실행 폴더에 두 학습 프로세스가 동시에 접근하면 두 번째 실행은 중단된다.
+
+## 80k 체크포인트에서 후속 파인튜닝
+
+[후속 연구·실험 설계](20260923_PV26_STAGE2_RESEARCH.md)는 첫 비교군과 MCAP 최종 평가 경계를 설명한다. config/pv26_stage2.yaml은 80,000 step latest 가중치와 해당 실행의 저장된 train/val 목록을 기본으로 사용하고, 12,000 step의 새 cosine 일정을 연다. 기존 80k 실행의 optimizer를 이어받는 E 재개와 다르다.
+
+FC 두 후보와 F 여섯 후보는 기존 방법론 탐색 스크립트를 stage2 설정으로 실행한다. 아래는 300-step 첫 rung이다. 결과·후보별 로그·체크포인트는 runs/20260923_stage2_fc와 runs/20260923_stage2_f 아래에 분리된다. --through-images의 9600 / 32000 / 128000 / 384000은 논리 배치 32에서 각각 누적 300 / 1000 / 4000 / 12000 step이다.
+
+~~~bash
+cd /home/kai/yolopv26
+.venv/bin/python tools/run_pv26_method_search.py --base-config config/pv26_stage2.yaml --search-config config/pv26_stage2_fc_search.yaml --through-images 9600
+.venv/bin/python tools/run_pv26_method_search.py --base-config config/pv26_stage2.yaml --search-config config/pv26_stage2_f_search.yaml --through-images 9600
+~~~
+
+같은 명령의 --through-images를 32000, 이후 128000으로 높이면 저장된 run을 이어간다. stage2에서는 신호등 F1과 차선 F1을 따로 보고 자동 단일 승자를 고르지 않는다. 4000-step 결과를 검토한 뒤 더 길게 실행할 후보만 --promote fj_m fd_m 등으로 지정하고 --through-images 384000을 사용한다. FC 4000-step 개발 비교에서 restart가 두 지표에서 앞서 config/pv26_stage2_f_search.yaml의 F 공통 조건은 restart로 고정했다.
+
+사용자가 지정한 kai 환경의 후속 산출물 경로는 이 저장소의 runs 디렉터리다. 실행 전 해당 파일시스템의 여유 공간을 확인한다.
+
+~~~bash
+cd /home/kai/yolopv26
+df -h runs
+.venv/bin/python tools/run_pv26_train.py --config config/pv26_stage2.yaml --output-dir runs/20260923_stage2_fj_m --steps 1000
+~~~
+
+1000 step 완료 후 같은 run에서 3000 step을 더 진행하면 누적 4000 step이 된다. 처음부터 저장한 max_steps=12000은 바꾸지 않는다.
+
+~~~bash
+cd /home/kai/yolopv26
+.venv/bin/python tools/run_pv26_train.py --resume-run runs/20260923_stage2_fj_m --steps 3000
+~~~
+
+FC 비교는 별도 output 디렉터리에서 --detector-loss-schedule restart 또는 mature를 지정한다. F 비교는 --stage roadmark/joint와 --backbone-lr, --head-lr, --roadmark-lr를 새 run에 지정한다. 시작 가중치, 샘플 목록, optimizer/LR 정책과 각 단계 예산은 run_config.json에 저장된다. 기존 config/pv26.yaml을 실험 중 덮어쓰지 않는다.
+
+roadmark 단계 체크포인트는 자체 정기 평가에서 detector를 실행하지 않는다. 신호등까지 같은 개발 validation으로 비교할 때는 다음처럼 별도 평가한다.
+
+~~~bash
+cd /home/kai/yolopv26
+.venv/bin/python tools/run_pv26_train.py --resume-run runs/20260923_stage2_fd_m --evaluate-only latest --eval-stage joint --eval-index-run runs/20260922_1607_joint_lr3x_80k --eval-output evaluation/joint_latest.json
+~~~
+
+동일 가중치에서 선 좌표만 비교하려면 --roadmark-localization grid/subpixel/smooth를, 클래스별 threshold는 --roadmark-thresholds WHITE YELLOW STOP을 사용한다. threshold 비교는 --eval-output으로 별도 파일명을 지정한다. 후보 선택과 threshold 조정에는 개발 자료만 사용한다.
+
+MCAP 원본의 2Hz 평가 영상과 수동 지정 이벤트 영상 추출은 tools/prepare_pv26_mcap_labels.py가 담당한다. 전체 영상의 오프라인 추론은 tools/predict_pv26_mcap.py가 rosbag2_py로 좌우 compressed image를 순서대로 읽어 JSONL을 저장하며 ROS 노드를 띄우지 않는다. --signal-checkpoint로 제품 의미를 학습한 SignalAttr를 연결한다. [지정 MCAP 최종 평가 절차](20260923_MCAP_FINAL_EVALUATION_PROTOCOL.md)에 따라 모델·threshold·라벨이 확정된 뒤 전체 bag을 평가한다.
+
+사람이 확인한 JSONL 라벨이 준비되면 tools/evaluate_pv26_mcap.py --predictions 관측.jsonl --labels 정답.jsonl --output 점수.json으로 박스·상태·선분 점수를 계산한다. 구체적인 라벨 필드와 현재 미구현인 ignore 영역·시계열 평가는 위 최종 평가 절차에 명시했다. 원본 bag에는 평가 산출물을 쓰지 않는다.
 
 ## SignalAttr
 
@@ -90,7 +134,7 @@ SIGINT 또는 SIGTERM을 받으면 진행 중인 step을 마친 뒤 저장한다
 
 ```bash
 python3 tools/train_signal_attr.py prepare \
-  --output-dir /home/user1/Storage/ROS2_Workspace_offload/yolopv26/signal_crops \
+  --output-dir runs/signal_crops \
   --all-off-policy exclude
 ```
 
@@ -100,22 +144,22 @@ python3 tools/train_signal_attr.py prepare \
 
 ```bash
 python3 tools/train_signal_attr.py train \
-  --dataset /home/user1/Storage/ROS2_Workspace_offload/yolopv26/signal_crops
+  --dataset runs/signal_crops
 ```
 
 새 실행은 상태별 균등 표본 선택을 기본으로 한다. 차량의 색상과 좌회전 조합, 보행자의 색상별 그룹을 균등하게 뽑는다. `--sampling natural`을 주면 원래 표본 비율을 사용한다. checkpoint 선택에는 상태별 오탐과 미탐을 반영한 `macro_state_f1`을 사용하고, 판독 유효 비율도 기록한다.
 
-SignalAttr도 `--resume-run`과 `--steps`로 재개할 수 있다. 실행별로 저장한 crop 라벨과 설정을 읽으므로, 나중에 원본 라벨을 수정해도 그 실행의 표본은 유지된다. 배포용 체크포인트는 실행 폴더의 `best_signal_attr.pt`다.
+SignalAttr도 `--resume-run`과 `--steps`로 재개할 수 있다. 실행별로 저장한 crop 라벨과 설정을 읽으므로, 나중에 원본 라벨을 수정해도 그 실행의 표본은 유지된다. 배포용 체크포인트는 실행 폴더의 `best_signal_attr.pt`다. kai 환경에서는 `runs/` 하위에 저장한다. 전체 제품 crop으로 만든 한 SignalAttr 실행의 data_snapshot은 약 352MiB이므로 checkpoint 크기만으로 저장량을 판단하지 않는다.
 
 ## 모델 내보내기
 
 ```bash
 python3 tools/export_pv26_torchscript.py \
-  --checkpoint /home/user1/Storage/ROS2_Workspace_offload/yolopv26/실행폴더/checkpoints/best.pt \
+  --checkpoint runs/실행폴더/checkpoints/best.pt \
   --device cuda:0
 
 python3 tools/export_signal_attr_torchscript.py \
-  --checkpoint /home/user1/Storage/ROS2_Workspace_offload/yolopv26/SignalAttr실행폴더/best_signal_attr.pt
+  --checkpoint runs/SignalAttr실행폴더/best_signal_attr.pt
 ```
 
 기본 출력은 체크포인트 옆의 TorchScript 파일이다. 출력 형식은 모델 안의 `metadata.json`에 포함하며, 같은 내용을 읽기 쉬운 JSON 파일로도 저장한다. 기존 출력 파일을 갱신할 때는 `--overwrite`를 지정한다.
@@ -126,11 +170,11 @@ python3 tools/export_signal_attr_torchscript.py \
 
 ```bash
 python3 tools/predict_pv26.py \
-  --checkpoint /home/user1/Storage/ROS2_Workspace_offload/yolopv26/실행폴더/checkpoints/best.pt \
-  --signal-checkpoint /home/user1/Storage/ROS2_Workspace_offload/yolopv26/SignalAttr실행폴더/best_signal_attr.pt \
+  --checkpoint runs/실행폴더/checkpoints/best.pt \
+  --signal-checkpoint runs/SignalAttr실행폴더/best_signal_attr.pt \
   --images /경로/left.jpg /경로/right.jpg \
   --device cuda:0 \
-  --output /home/user1/Storage/ROS2_Workspace_offload/yolopv26/관측결과.json
+  --output runs/관측결과.json
 ```
 
 `--overlay`에 디렉터리를 지정하면 박스와 점열을 그린 이미지도 저장한다. JSON에는 원본 영상 좌표의 박스, 차량용/보행자용 구분, 상태와 도로표식 점열이 담긴다.
@@ -139,4 +183,4 @@ python3 tools/predict_pv26.py \
 
 ## 저장 위치
 
-큰 산출물은 외장 SSD의 `~/Storage/ROS2_Workspace_offload/yolopv26` 아래에 저장한다. 실행 폴더에는 설정, 고정한 표본 목록, 최근 평가 결과가 있으며 checkpoints에는 latest, previous, best가 유지된다. 코드와 소형 기준 가중치는 저장소에서 관리한다.
+산출물은 kai의 `/home/kai/yolopv26/runs/` 아래에 저장한다. 실행 폴더에는 설정, 고정한 표본 목록, 최근 평가 결과가 있으며 checkpoints에는 latest, previous, best가 유지된다. 코드와 소형 기준 가중치는 저장소에서 관리한다.

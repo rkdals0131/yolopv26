@@ -52,6 +52,7 @@ def estimate(run_dir: Path, *, logical_batches: int, small_batch_size: int) -> d
     dataset = FocusedDataset(
         sources, split="train", image_hw=tuple(cfg["model"]["image_hw"]), seed=seed,
         augment=bool(data_cfg.get("augment", False)), index_path=run_dir / "train_samples.jsonl",
+        roadmark_target_sigma_cells=float(data_cfg.get("roadmark_target_sigma_cells", 0.0)),
     )
     sampler_position = int((checkpoint.get("sampler") or {}).get("position", 0))
     sampler = LogicalBatchSampler(
@@ -78,6 +79,8 @@ def estimate(run_dir: Path, *, logical_batches: int, small_batch_size: int) -> d
     criterion = PV26FocusedLoss(
         model, det_weight=float(train_cfg.get("det_loss_weight", 1.0)),
         roadmark_weight=float(train_cfg.get("roadmark_loss_weight", 1.0)),
+        detector_loss_schedule=str(train_cfg.get("detector_loss_schedule", "restart")),
+        roadmark_dice=str(train_cfg.get("roadmark_dice", "linear")),
     ).to(device)
     criterion.set_progress(int(checkpoint["global_step"]), int(checkpoint["planned_steps"]))
     parameters = [parameter for parameter in model.parameters() if parameter.requires_grad]

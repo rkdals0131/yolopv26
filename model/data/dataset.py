@@ -329,16 +329,46 @@ def _roadmark_lines(label: Mapping[str, Any], path: Path) -> tuple[list[dict[str
 
 def _roadmark_maps(lines: Sequence[Mapping[str, Any]], image_hw: tuple[int, int],
                    stride: int, scale: float, padding: tuple[int, int, int, int],
-                   flip: bool, lane_color_known: bool) -> tuple[torch.Tensor, torch.Tensor]:
+                   flip: bool, lane_color_known: bool,
+                   sigma_cells: float = 0.0) -> tuple[torch.Tensor, torch.Tensor]:
     out_h, out_w = image_hw[0] // stride, image_hw[1] // stride
-    masks = [Image.new("L", (out_w, out_h), 0) for _ in ROADMARK_CLASSES]
-    draws = [ImageDraw.Draw(mask) for mask in masks]
     left, top, _, _ = padding
-    for line in lines:
-        transformed = [((x * scale + left) / stride, (y * scale + top) / stride)
-                       for x, y in line["points_xy"]]
-        draws[line["class_id"]].line(transformed, fill=255, width=1)
-    target = torch.from_numpy(np.stack([np.asarray(mask, dtype=np.float32) / 255.0 for mask in masks]))
+    if sigma_cells == 0.0:
+        masks = [Image.new("L", (out_w, out_h), 0) for _ in ROADMARK_CLASSES]
+        draws = [ImageDraw.Draw(mask) for mask in masks]
+        for line in lines:
+            transformed = [((x * scale + left) / stride, (y * scale + top) / stride)
+                           for x, y in line["points_xy"]]
+            draws[line["class_id"]].line(transformed, fill=255, width=1)
+        target = torch.from_numpy(np.stack(
+            [np.asarray(mask, dtype=np.float32) / 255.0 for mask in masks]))
+    else:
+        maps = np.zeros((len(ROADMARK_CLASSES), out_h, out_w), dtype=np.float32)
+        radius = 3.0 * sigma_cells
+        for line in lines:
+            # Index coordinates refer to output-cell centers, matching decoding.
+            points = [((x * scale + left) / stride - 0.5,
+                       (y * scale + top) / stride - 0.5)
+                      for x, y in line["points_xy"]]
+            plane = maps[line["class_id"]]
+            for (x0, y0), (x1, y1) in zip(points, points[1:]):
+                x_start = max(0, math.floor(min(x0, x1) - radius))
+                x_stop = min(out_w, math.ceil(max(x0, x1) + radius) + 1)
+                y_start = max(0, math.floor(min(y0, y1) - radius))
+                y_stop = min(out_h, math.ceil(max(y0, y1) + radius) + 1)
+                if x_start >= x_stop or y_start >= y_stop:
+                    continue
+                yy, xx = np.mgrid[y_start:y_stop, x_start:x_stop]
+                dx, dy = x1 - x0, y1 - y0
+                length_squared = dx * dx + dy * dy
+                fraction = (np.clip(((xx - x0) * dx + (yy - y0) * dy) / length_squared,
+                                    0.0, 1.0) if length_squared else 0.0)
+                distance_squared = ((xx - x0 - fraction * dx) ** 2
+                                    + (yy - y0 - fraction * dy) ** 2)
+                values = np.exp(-distance_squared / (2.0 * sigma_cells ** 2))
+                np.maximum(plane[y_start:y_stop, x_start:x_stop], values,
+                           out=plane[y_start:y_stop, x_start:x_stop])
+        target = torch.from_numpy(maps)
     if flip:
         # Mirror the rasterized target exactly as the image; out_w - x
         # shifts the supervision one output pixel to the right.
@@ -361,7 +391,8 @@ class FocusedDataset(Dataset[dict[str, Any]]):
                  image_hw: tuple[int, int] = DEFAULT_IMAGE_HW,
                  roadmark_stride: int = ROADMARK_STRIDE, augment: bool = False,
                  seed: int = 0, sample_limit_per_source: int | None = None,
-                 index_path: Path | None = None) -> None:
+                 index_path: Path | None = None, selected_kind: str | None = None,
+                 roadmark_target_sigma_cells: float = 0.0) -> None:
         if not sources or len({source.name for source in sources}) != len(sources):
             raise ValueError("focused sources must have unique names")
         if any(source.kind not in {"traffic", "roadmark"} for source in sources):
@@ -372,24 +403,33 @@ class FocusedDataset(Dataset[dict[str, Any]]):
             raise ValueError("image dimensions must be positive multiples of roadmark_stride")
         if sample_limit_per_source is not None and sample_limit_per_source <= 0:
             raise ValueError("sample_limit_per_source must be positive")
+        if not math.isfinite(roadmark_target_sigma_cells) or roadmark_target_sigma_cells < 0:
+            raise ValueError("roadmark_target_sigma_cells must be finite and non-negative")
         if index_path is not None and sample_limit_per_source is not None:
             raise ValueError("sample_limit_per_source cannot trim a saved index")
-        self.sources = tuple(sources)
+        active_sources = tuple(source for source in sources
+                               if selected_kind is None or source.kind == selected_kind)
+        if not active_sources:
+            raise ValueError("selected source kind is absent")
+        self.sources = active_sources
         self.split = "train" if _split_dir(split) == "Training" else "val"
         self.image_hw = tuple(image_hw)
         self.roadmark_stride = roadmark_stride
+        self.roadmark_target_sigma_cells = float(roadmark_target_sigma_cells)
         self.augment = bool(augment and self.split == "train")
         self.seed = int(seed)
-        self.records = (
+        records = (
             _load_index(Path(index_path), sources, self.split)
             if index_path is not None
-            else [record for source in sources for record in
+            else [record for source in active_sources for record in
                   _source_records(source, self.split, sample_limit_per_source)]
         )
+        self.records = ([record for record in records if record.source.kind == selected_kind]
+                        if selected_kind is not None else records)
         self.indices_by_source = {
             source.name: [index for index, record in enumerate(self.records)
                           if record.source.name == source.name]
-            for source in sources
+            for source in active_sources
         }
 
     def save_index(self, path: Path) -> None:
@@ -459,7 +499,7 @@ class FocusedDataset(Dataset[dict[str, Any]]):
             roadmark_gt, lane_color_known = _roadmark_lines(label, record.label_path)
             roadmark_target, roadmark_valid = _roadmark_maps(
                 roadmark_gt, self.image_hw, self.roadmark_stride, scale, padding,
-                flip, lane_color_known)
+                flip, lane_color_known, self.roadmark_target_sigma_cells)
         return {
             "image": image_tensor,
             "cls": cls,
@@ -547,6 +587,9 @@ class LogicalBatchSampler(Sampler[list[tuple[int, int]]]):
         self.seed = int(seed)
         self.position = int(start_position)
         self.strategy = strategy
+        # Optional within-source pools, refreshed only at consumed batch boundaries.
+        self.sampling_groups: dict[str, dict[str, dict[str, Any]]] = {}
+        self.mining_state: dict[str, Any] = {}
         ratios = {source.name: float(source.weight) for source in dataset.sources}
         if source_ratios is not None:
             if set(source_ratios) != set(ratios):
@@ -573,6 +616,16 @@ class LogicalBatchSampler(Sampler[list[tuple[int, int]]]):
     def _random_index(self, source_name: str, draw_id: int) -> int:
         indices = self.dataset.indices_by_source[source_name]
         sample_rng = random.Random((self.seed << 32) + draw_id)
+        groups = self.sampling_groups.get(source_name)
+        if groups:
+            available = [group for group in groups.values()
+                         if group["indices"] and group["weight"] > 0]
+            ticket = sample_rng.random() * sum(group["weight"] for group in available)
+            for group in available:
+                ticket -= group["weight"]
+                if ticket < 0:
+                    indices = group["indices"]
+                    break
         return indices[sample_rng.randrange(len(indices))]
 
     def _two_choice_index(
@@ -622,7 +675,8 @@ class LogicalBatchSampler(Sampler[list[tuple[int, int]]]):
     def state_dict(self) -> dict[str, Any]:
         return {"position": self.position, "batch_size": self.batch_size,
                 "seed": self.seed, "source_ratios": dict(self.source_ratios),
-                "strategy": self.strategy}
+                "strategy": self.strategy, "sampling_groups": self.sampling_groups,
+                "mining_state": self.mining_state}
 
     def load_state_dict(self, state: Mapping[str, Any]) -> None:
         if (int(state["batch_size"]) != self.batch_size or int(state["seed"]) != self.seed
@@ -633,3 +687,5 @@ class LogicalBatchSampler(Sampler[list[tuple[int, int]]]):
         if position < 0 or position % self.batch_size:
             raise ValueError("invalid resumed sampler position")
         self.position = position
+        self.sampling_groups = state.get("sampling_groups", {})
+        self.mining_state = state.get("mining_state", {})

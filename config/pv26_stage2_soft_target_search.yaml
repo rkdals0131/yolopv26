@@ -1,0 +1,113 @@
+experiment:
+  name: 20260924_stage2_soft_target
+  seed: 26
+  validation_samples_per_source: 1024
+  common_eval_run: runs/20260922_1607_joint_lr3x_80k
+  base_overrides:
+    train:
+      detector_loss_schedule: restart
+  resource_images: [32000, 128000, 384000]
+  promotion_policy: all
+  design:
+    block: roadmark_target_recipe
+    factors:
+      recipe: [hard_linear, hard_squared, soft_0p5, soft_1p0]
+    seeds: [26, 27, 28]
+    randomization_seed: 260924
+candidates:
+- name: soft_1p0_s26
+  seed: 26
+  factors: {recipe: soft_1p0}
+  overrides:
+    data:
+      roadmark_target_sigma_cells: 1.0
+    train:
+      roadmark_dice: squared
+- name: soft_0p5_s27
+  seed: 27
+  factors: {recipe: soft_0p5}
+  overrides:
+    data:
+      roadmark_target_sigma_cells: 0.5
+    train:
+      roadmark_dice: squared
+- name: soft_1p0_s27
+  seed: 27
+  factors: {recipe: soft_1p0}
+  overrides:
+    data:
+      roadmark_target_sigma_cells: 1.0
+    train:
+      roadmark_dice: squared
+- name: hard_squared_s28
+  seed: 28
+  factors: {recipe: hard_squared}
+  overrides:
+    data:
+      roadmark_target_sigma_cells: 0.0
+    train:
+      roadmark_dice: squared
+- name: soft_1p0_s28
+  seed: 28
+  factors: {recipe: soft_1p0}
+  overrides:
+    data:
+      roadmark_target_sigma_cells: 1.0
+    train:
+      roadmark_dice: squared
+- name: soft_0p5_s28
+  seed: 28
+  factors: {recipe: soft_0p5}
+  overrides:
+    data:
+      roadmark_target_sigma_cells: 0.5
+    train:
+      roadmark_dice: squared
+- name: hard_linear_s28
+  seed: 28
+  factors: {recipe: hard_linear}
+  overrides:
+    data:
+      roadmark_target_sigma_cells: 0.0
+    train:
+      roadmark_dice: linear
+- name: hard_squared_s26
+  seed: 26
+  factors: {recipe: hard_squared}
+  overrides:
+    data:
+      roadmark_target_sigma_cells: 0.0
+    train:
+      roadmark_dice: squared
+- name: hard_linear_s27
+  seed: 27
+  factors: {recipe: hard_linear}
+  overrides:
+    data:
+      roadmark_target_sigma_cells: 0.0
+    train:
+      roadmark_dice: linear
+- name: soft_0p5_s26
+  seed: 26
+  factors: {recipe: soft_0p5}
+  overrides:
+    data:
+      roadmark_target_sigma_cells: 0.5
+    train:
+      roadmark_dice: squared
+- name: hard_linear_s26
+  seed: 26
+  factors: {recipe: hard_linear}
+  overrides:
+    data:
+      roadmark_target_sigma_cells: 0.0
+    train:
+      roadmark_dice: linear
+- name: hard_squared_s27
+  seed: 27
+  factors: {recipe: hard_squared}
+  overrides:
+    data:
+      roadmark_target_sigma_cells: 0.0
+    train:
+      roadmark_dice: squared

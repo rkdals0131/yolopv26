@@ -157,11 +157,15 @@ def main(argv: list[str] | None = None) -> None:
     prepare.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     prepare.add_argument("--raw-root", type=Path)
     prepare.add_argument("--output-dir", type=Path, required=True)
+    prepare.add_argument("--artifact-root", type=Path,
+                         help="Existing root containing the prepared crop output.")
     prepare.add_argument("--all-off-policy", choices=("exclude", "off"), required=True)
     prepare.add_argument("--workers", type=int)
     prepare.add_argument("--sample-limit", type=int)
     train = commands.add_parser("train")
     train.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
+    train.add_argument("--artifact-root", type=Path,
+                       help="Existing root containing all outputs for this run.")
     train.add_argument("--dataset", type=Path)
     destination = train.add_mutually_exclusive_group()
     destination.add_argument("--output-dir", type=Path)
@@ -185,7 +189,8 @@ def main(argv: list[str] | None = None) -> None:
         raw_root = _path(_override(args, "raw_root", settings["raw_root"]))
         workers = int(_override(args, "workers", settings["workers"]))
         crop_config = SignalAttrCropConfig(**settings["crop"])
-        output = _output_directory(args.output_dir)
+        artifact_root = _path(args.artifact_root) if args.artifact_root else None
+        output = _output_directory(args.output_dir, artifact_root)
         with training_run_lock(output):
             if (output / "meta/signal_attr_dataset_manifest.json").exists():
                 raise FileExistsError(f"crop dataset already exists: {output}")
@@ -199,9 +204,10 @@ def main(argv: list[str] | None = None) -> None:
     if args.resume_run is None and args.dataset is None:
         parser.error("train requires --dataset or --resume-run")
     settings = _settings(args.config)["train"] if args.resume_run is None else None
+    artifact_root = _path(args.artifact_root) if args.artifact_root else None
     output = _output_directory(args.resume_run if args.resume_run else
-        args.output_dir or _path(settings["output_root"]) /
-        (datetime.now().strftime("%Y%m%d_%H%M%S") + "_signal_attr"))
+        args.output_dir or (artifact_root or _path(settings["output_root"])) /
+        (datetime.now().strftime("%Y%m%d_%H%M%S") + "_signal_attr"), artifact_root)
     with training_run_lock(output):
         _train_locked(args, parser, output)
 

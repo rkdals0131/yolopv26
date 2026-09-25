@@ -1,0 +1,29 @@
+experiment:
+  name: 20260923_stage2_f
+  seed: 26
+  validation_samples_per_source: 1024
+  common_eval_run: runs/20260922_1607_joint_lr3x_80k
+  base_overrides:
+    train: {detector_loss_schedule: restart}
+  resource_images: [9600, 32000, 128000, 384000]
+  promotion_policy: all
+
+candidates:
+  - name: fj_l
+    overrides:
+      train: {stage: joint, backbone_lr: 0.000009, head_lr: 0.00009, roadmark_lr: 0.00027}
+  - name: fj_m
+    overrides:
+      train: {stage: joint, backbone_lr: 0.00003, head_lr: 0.0003, roadmark_lr: 0.0009}
+  - name: fj_h
+    overrides:
+      train: {stage: joint, backbone_lr: 0.00009, head_lr: 0.0009, roadmark_lr: 0.0027}
+  - name: fd_l
+    overrides:
+      train: {stage: roadmark, backbone_lr: 0.000009, head_lr: 0.00009, roadmark_lr: 0.00027}
+  - name: fd_m
+    overrides:
+      train: {stage: roadmark, backbone_lr: 0.00003, head_lr: 0.0003, roadmark_lr: 0.0009}
+  - name: fd_h
+    overrides:
+      train: {stage: roadmark, backbone_lr: 0.00009, head_lr: 0.0009, roadmark_lr: 0.0027}

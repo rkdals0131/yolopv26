@@ -1,0 +1,68 @@
+# All 401,081 locally available training images; original 57,700 validation images.
+# Online mining deduplicates the original index's sampling tickets.
+# Traffic stays at 1/3 and stop-positive at 2/15 of all draws.
+# Current-model hard negatives increase from 25% to 37.5% to 50%;
+# the remaining allocation samples ordinary roadmark negatives.
+# 360k updates at batch 32 = 11.52M image draws, about 60 hours on this RTX 4060.
+model:
+  weights: yolo26s.pt
+  variant: s
+  roadmark_width: 64
+  image_hw:
+  - 608
+  - 800
+data:
+  sources:
+  - name: traffic_aihub
+    kind: traffic
+    root: seg_dataset/AIHUB/신호등-도로표지판 인지 영상(수도권)
+    weight: 1.0
+  - name: roadmark_aihub
+    kind: roadmark
+    root: seg_dataset/AIHUB/차선-횡단보도 인지 영상(수도권)
+    weight: 2.0
+  seed: 26
+  sampling_strategy: random_with_replacement
+  num_workers: 4
+  prefetch_factor: 2
+  pin_memory: true
+  augment: true
+  index_run: runs/20260925_full_data_index
+  roadmark_target_sigma_cells: 0.5
+  hard_negative_mining:
+    source: roadmark_aihub
+    positive_index: runs/20260924_stop_positive_soft_0p5_12k/train_samples.jsonl
+    initial_samples: 0  # Scan all training negatives before the first resumed update.
+    refresh_samples: 50000
+    interval_steps: 8000
+    hard_fractions: [0.25, 0.375, 0.5]  # Fractions of all training draws.
+    positive_fraction: 0.13333333333333333
+    batch_size: 8
+    num_workers: 4
+train:
+  device: cuda:0
+  amp_dtype: bfloat16
+  stage: joint
+  logical_batch_size: 32
+  microbatch_size: 20
+  max_steps: 360000
+  optimizer: adamw
+  lr_schedule: cosine
+  gradient_strategy: sum
+  detector_loss_schedule: mature
+  roadmark_dice: squared
+  backbone_lr: 9.0e-06
+  head_lr: 9.0e-05
+  roadmark_lr: 0.00027
+  det_loss_weight: 1.0
+  roadmark_loss_weight: 1.0
+  weight_decay: 0.0001
+  grad_clip_norm: 5.0
+  checkpoint_interval_sec: 600
+  max_consecutive_failures: 3
+  log_every: 100
+  validation_every: 2000
+  validation_samples_per_source: 1024
+  geometry_tolerance_px: 8.0
+  output_root: runs
+initial_checkpoint: runs/20260924_stop_positive_soft_0p5_12k/checkpoints/best.pt

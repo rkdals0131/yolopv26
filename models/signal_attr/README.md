@@ -14,6 +14,8 @@ b7cdfb844479b0bb84606dd8d201d180659ca185b4067a682aeffea939b67709
 
 동봉한 가중치는 이전 상태 라벨로 학습했다. 보행자 상태를 제외하고 좌회전과 기타 화살표를 합쳤던 기준 모델이다. 제품용 추론에서는 이 가중치의 상태를 무효로 표시한다.
 
+`competition_20260923.pt`는 `state_semantics=left_arrow`가 기록된 ROS 추론용 SignalAttr 체크포인트다. `models/pv26/competition_20260924.pt`와 함께 사용한다. 기존 `best_signal_attr.pt`의 학습 초기화 용도는 유지한다.
+
 새 학습 경로는 차량과 보행자의 색상을 학습하고, 화살표는 차량의 좌회전만 사용한다. 차량용과 보행자용의 종류는 본체 검출기가 구분한다. 새 라벨로 crop을 만들고 재학습하는 명령은 [실행 안내](../../docs/7_RUN_GUIDE.md#signalattr)에 있다.
 
 ## 사용

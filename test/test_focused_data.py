@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 from PIL import Image
 import torch
@@ -17,6 +18,20 @@ def test_roadmark_horizontal_flip_preserves_raster_alignment():
             flipped, flipped_valid = _roadmark_maps(lines, (64, 64), 4, 1., padding, True, color_known)
             torch.testing.assert_close(flipped, torch.flip(target, (-1,)))
             torch.testing.assert_close(flipped_valid, torch.flip(valid, (-1,)))
+
+
+def test_soft_roadmark_target_peaks_at_line_and_preserves_flip_and_validity():
+    lines = [{"class_id": 0, "points_xy": [[10.5, 6.], [10.5, 54.]]}]
+    target, valid = _roadmark_maps(lines, (64, 64), 4, 1., (0, 0, 0, 0),
+                                   False, True, sigma_cells=1.0)
+    flipped, flipped_valid = _roadmark_maps(lines, (64, 64), 4, 1., (0, 0, 0, 0),
+                                            True, True, sigma_cells=1.0)
+    assert 0 < target[0, 7, 1] < target[0, 7, 2] < 1
+    assert target[0, 7, 4] < target[0, 7, 1]
+    assert target[0, 0, 2] < target[0, 7, 2]  # Finite line endpoint.
+    assert target[1:].count_nonzero() == 0
+    torch.testing.assert_close(flipped, torch.flip(target, (-1,)))
+    torch.testing.assert_close(flipped_valid, torch.flip(valid, (-1,)))
 
 
 def test_declared_image_name_and_saved_membership(tmp_path):
@@ -48,6 +63,27 @@ def test_declared_image_name_and_saved_membership(tmp_path):
     resumed = FocusedDataset([source], image_hw=(32, 32), index_path=index_path)
     assert len(resumed) == 1
     assert resumed[0]["meta"]["image_path"] == str(image_dir / "camera.jpg")
+
+
+def test_joint_sample_index_seeds_a_roadmark_only_run(tmp_path):
+    traffic = FocusedSource("traffic", tmp_path / "traffic", "traffic")
+    roadmark = FocusedSource("roadmark", tmp_path / "roadmark", "roadmark")
+    index = tmp_path / "original" / "train_samples.jsonl"
+    index.parent.mkdir()
+    rows = [
+        {"source": source.name, "kind": source.kind, "split": "train",
+         "sample_id": source.name, "image": "Training/image.jpg",
+         "label": "Training/label.json"}
+        for source in (traffic, roadmark)
+    ]
+    index.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    subset = FocusedDataset([traffic, roadmark], index_path=index,
+                            selected_kind="roadmark", image_hw=(32, 32))
+    assert [record.sample_id for record in subset.records] == ["roadmark"]
+    saved = tmp_path / "new" / "train_samples.jsonl"
+    subset.save_index(saved)
+    resumed = FocusedDataset([roadmark], index_path=saved, image_hw=(32, 32))
+    assert [record.sample_id for record in resumed.records] == ["roadmark"]
 
 
 def test_unknown_labels_mask_only_untrusted_supervision(tmp_path):
@@ -102,6 +138,37 @@ def test_unknown_labels_mask_only_untrusted_supervision(tmp_path):
     blue = FocusedDataset([FocusedSource("roadmark", road_root, "roadmark")], image_hw=(32, 32))[0]
     assert blue["roadmark_valid"].any(dim=(1, 2)).tolist() == [True, True, True]
     assert blue["roadmark_target"].sum() == 0
+
+
+def test_mined_sampling_share_and_resume_after_pool_refresh():
+    dataset = type("DatasetStub", (), {
+        "sources": [FocusedSource("traffic", Path("."), "traffic", 1),
+                    FocusedSource("roadmark", Path("."), "roadmark", 2)],
+        "indices_by_source": {"traffic": [0], "roadmark": [1, 2, 3, 4]},
+        "__len__": lambda self: 5,
+    })()
+    sampler = LogicalBatchSampler(dataset, batch_size=32, seed=26)
+    sampler.sampling_groups = {"roadmark": {
+        "positive": {"weight": .2, "indices": [1]},
+        "hard": {"weight": .75, "indices": [2]},
+        "regular": {"weight": .05, "indices": [3, 4]},
+    }}
+    iterator = iter(sampler)
+    draws = []
+    for _ in range(400):
+        draws.extend(index for index, _ in next(iterator))
+        sampler.commit(32)
+    assert abs(draws.count(2) / len(draws) - .5) < .02
+    assert set(draws) == {0, 1, 2, 3, 4}
+    # A newly mined example replaces the previous hard example at a boundary.
+    sampler.sampling_groups["roadmark"]["hard"]["indices"] = [4]
+    sampler.sampling_groups["roadmark"]["regular"]["indices"] = [2, 3]
+    sampler.mining_state = {"round": 2, "last_step": 400, "cursor": 128}
+    expected = next(iter(sampler))
+    resumed = LogicalBatchSampler(dataset, batch_size=32, seed=26)
+    resumed.load_state_dict(sampler.state_dict())
+    assert next(iter(resumed)) == expected
+    assert resumed.mining_state == sampler.mining_state
 
 
 def test_two_choice_sampler_balances_exposure_and_resumes_from_committed_position():

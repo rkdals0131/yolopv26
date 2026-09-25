@@ -18,13 +18,21 @@ class PV26FocusedLoss(nn.Module):
         *,
         det_weight: float = 1.0,
         roadmark_weight: float = 1.0,
+        detector_loss_schedule: str = "restart",
+        roadmark_dice: str = "linear",
     ) -> None:
         super().__init__()
+        if detector_loss_schedule not in {"restart", "mature"}:
+            raise ValueError("detector_loss_schedule must be restart or mature")
+        if roadmark_dice not in {"linear", "squared"}:
+            raise ValueError("roadmark_dice must be linear or squared")
         # Keep a non-registered reference: the criterion must not duplicate model
         # parameters in its own state_dict or optimizer parameter groups.
         self.__dict__["_model"] = model
         self.det_weight = float(det_weight)
         self.roadmark_weight = float(roadmark_weight)
+        self.detector_loss_schedule = detector_loss_schedule
+        self.roadmark_dice = roadmark_dice
         self._official = None
         self._official_device = None
         self._detector_progress = (0, 1)
@@ -42,10 +50,13 @@ class PV26FocusedLoss(nn.Module):
         if self._official is None:
             return
         completed, total = self._detector_progress
-        fraction_remaining = max(1.0 - completed / total, 0.0)
         official = self._official
         official.updates = completed
-        official.o2m = fraction_remaining * (official.o2m_copy - official.final_o2m) + official.final_o2m
+        if self.detector_loss_schedule == "mature":
+            official.o2m = official.final_o2m
+        else:
+            fraction_remaining = max(1.0 - completed / total, 0.0)
+            official.o2m = fraction_remaining * (official.o2m_copy - official.final_o2m) + official.final_o2m
         official.o2o = official.total - official.o2m
 
     @staticmethod
@@ -117,6 +128,9 @@ class PV26FocusedLoss(nn.Module):
             truth_sum = truth.sum(dim=(-2, -1))
             has_positive = truth_sum > 0
             dice_count = has_positive.sum()
+            if self.roadmark_dice == "squared":
+                probability_sum = probabilities.square().sum(dim=(-2, -1))
+                truth_sum = truth.square().sum(dim=(-2, -1))
             dice_by_class = 1.0 - (overlap + 1.0) / (probability_sum + truth_sum + 1.0)
             dice = torch.where(has_positive, dice_by_class, 0.0).sum() / dice_count.clamp_min(1)
             # Keep nonfinite model output visible to the trainer's skipped-update

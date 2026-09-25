@@ -22,7 +22,11 @@ def main() -> None:
     parser.add_argument("--images", type=Path, nargs="+", required=True)
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--confidence", type=float, default=0.25)
-    parser.add_argument("--roadmark-threshold", type=float, default=0.5)
+    threshold = parser.add_mutually_exclusive_group()
+    threshold.add_argument("--roadmark-threshold", type=float, default=0.5)
+    threshold.add_argument("--roadmark-thresholds", type=float, nargs=3,
+                           metavar=("WHITE", "YELLOW", "STOP"))
+    parser.add_argument("--roadmark-localization", choices=("grid", "subpixel", "smooth"), default="grid")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--overlay", type=Path)
     args = parser.parse_args()
@@ -35,7 +39,9 @@ def main() -> None:
     if pipeline.device.type == "cuda":
         torch.cuda.synchronize(pipeline.device)
     started = time.perf_counter()
-    observations = pipeline.predict(images, confidence=args.confidence, roadmark_threshold=args.roadmark_threshold)
+    observations = pipeline.predict(images, confidence=args.confidence,
+                                    roadmark_threshold=args.roadmark_thresholds or args.roadmark_threshold,
+                                    roadmark_localization=args.roadmark_localization)
     if pipeline.device.type == "cuda":
         torch.cuda.synchronize(pipeline.device)
     result = {"images": [str(path) for path in args.images], "observations": observations,
