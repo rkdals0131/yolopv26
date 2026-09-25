@@ -18,6 +18,21 @@ def _meta(raw_hw: tuple[int, int] = (64, 64), network_hw: tuple[int, int] = (64,
     }
 
 
+def test_squared_dice_has_zero_loss_and_gradient_at_soft_target() -> None:
+    target = torch.tensor([[[[0.2, 0.6, 0.8]], [[0.1, 0.4, 0.7]],
+                            [[0.3, 0.5, 0.9]]]])
+    logits = torch.logit(target).detach().requires_grad_()
+    valid = torch.ones_like(target, dtype=torch.bool)
+    squared = PV26FocusedLoss(torch.nn.Identity(), roadmark_dice="squared")
+    _, squared_dice, _, count = squared._roadmark_loss(logits, target, valid)
+    assert count == 3
+    torch.testing.assert_close(squared_dice, torch.zeros_like(squared_dice), atol=1e-7, rtol=0)
+    squared_dice.backward()
+    torch.testing.assert_close(logits.grad, torch.zeros_like(logits), atol=1e-7, rtol=0)
+    linear = PV26FocusedLoss(torch.nn.Identity())
+    assert linear._roadmark_loss(logits.detach(), target, valid)[1] > 0
+
+
 def test_partial_detection_labels_exclude_unlabeled_image() -> None:
     torch.set_num_threads(4)
     model = PV26FocusedModel(weights=None).train()
@@ -50,6 +65,27 @@ def test_partial_detection_labels_exclude_unlabeled_image() -> None:
     assert int(first["roadmark_valid_count"]) == 0
     first["total"].backward()
     assert model.detector.model[0].conv.weight.grad is not None
+
+
+def test_mature_finetuning_keeps_detector_loss_mix_at_finished_checkpoint() -> None:
+    torch.set_num_threads(4)
+    model = PV26FocusedModel(weights=None).train()
+    criterion = PV26FocusedLoss(model, detector_loss_schedule="mature")
+    batch = {
+        "image": torch.rand(1, 3, 64, 64),
+        "det_labeled": torch.tensor([True]),
+        "batch_idx": torch.empty(0, dtype=torch.long),
+        "cls": torch.empty(0, 1, dtype=torch.long),
+        "bboxes": torch.empty(0, 4),
+        "roadmark_target": torch.zeros(1, 3, 16, 16),
+        "roadmark_valid": torch.zeros(1, 3, 16, 16, dtype=torch.bool),
+    }
+    criterion.set_progress(0, 100)
+    criterion(model.forward_for_loss(batch["image"]), batch)
+    assert abs(criterion._official.o2m - 0.1) < 1e-6
+    assert abs(criterion._official.o2o - 0.9) < 1e-6
+    criterion.set_progress(50, 100)
+    assert abs(criterion._official.o2m - 0.1) < 1e-6
 
 
 def test_evaluation_consumes_entire_loader_and_reports_source_counts():
@@ -147,6 +183,93 @@ def test_roadmark_ridges_keep_distinct_sloped_lanes_and_horizontal_stops() -> No
     assert [line["class_name"] for line in lines].count("white_lane") == 2
     assert [line["class_name"] for line in lines].count("stop_line") == 2
     assert all(len(line["points_xy"]) >= 4 for line in lines)
+
+
+def test_auto_orientation_traces_near_horizontal_lanes_and_steep_stop_lines() -> None:
+    logits = torch.full((1, 3, 32, 32), -10.0)
+    for column in range(2, 30):
+        logits[0, 0, 20 + column // 8, column] = 10.0
+    for row in range(4, 28):
+        logits[0, 2, row, 6 + row // 6] = 10.0
+    fixed = decode_roadmark_points(logits, [_meta((128, 128), (128, 128))])[0]
+    auto = decode_roadmark_points(logits, [_meta((128, 128), (128, 128))], orientation="auto")[0]
+    assert fixed == []
+    assert sorted(line["class_name"] for line in auto) == ["stop_line", "white_lane"]
+    lane = next(line for line in auto if line["class_name"] == "white_lane")
+    assert lane["points_xy"][-1][0] - lane["points_xy"][0][0] > 90
+
+
+def test_auto_orientation_keeps_one_line_for_a_diagonal_or_curved_lane() -> None:
+    logits = torch.full((1, 3, 32, 32), -10.0)
+    for step in range(2, 28):
+        logits[0, 0, step, step] = 10.0
+    for column in range(2, 16):
+        logits[0, 1, 28 - column // 5, column] = 10.0
+    for row in range(8, 26):
+        logits[0, 1, row, 16 + (26 - row) // 4] = 10.0
+    lines = decode_roadmark_points(logits, [_meta((128, 128), (128, 128))], orientation="auto")[0]
+    assert [line["class_name"] for line in lines].count("white_lane") == 1
+    assert [line["class_name"] for line in lines].count("yellow_lane") == 1
+
+
+def test_line_filters_drop_weak_and_short_lines_per_class() -> None:
+    logits = torch.full((1, 3, 32, 32), -10.0)
+    logits[0, 0, 2:30, 5] = 10.0
+    logits[0, 0, 2:30, 20] = 0.5
+    logits[0, 2, 10, 4:12] = 10.0
+    logits[0, 2, 20, 2:30] = 10.0
+    meta = [_meta((128, 128), (128, 128))]
+    baseline = decode_roadmark_points(logits, meta)[0]
+    filtered = decode_roadmark_points(logits, meta, min_score=(0.9, 0.0, 0.0),
+                                      min_length_px=(0.0, 0.0, 60.0))[0]
+    assert len(baseline) == 4
+    assert [line["class_name"] for line in filtered] == ["white_lane", "stop_line"]
+    assert all(line["score"] > 0.9 for line in filtered)
+
+
+def test_subpixel_localization_moves_points_without_changing_traces() -> None:
+    logits = torch.full((1, 3, 16, 16), -10.0)
+    for row in range(2, 15):
+        logits[0, 0, row, 6:9] = torch.tensor([0.0, 3.0, 1.5])
+    for column in range(2, 15):
+        logits[0, 2, 9:12, column] = torch.tensor([0.0, 3.0, 1.5])
+    grid = decode_roadmark_points(logits, [_meta()])[0]
+    subpixel = decode_roadmark_points(logits, [_meta()], localization="subpixel")[0]
+    assert [line["class_name"] for line in grid] == [line["class_name"] for line in subpixel]
+    assert [len(line["points_xy"]) for line in grid] == [len(line["points_xy"]) for line in subpixel]
+    for before, after in zip(grid, subpixel):
+        axis = 1 if before["class_name"] == "stop_line" else 0
+        other = 1 - axis
+        assert all(after_point[axis] > before_point[axis]
+                   for before_point, after_point in zip(before["points_xy"], after["points_xy"]))
+        assert all(after_point[other] == before_point[other]
+                   for before_point, after_point in zip(before["points_xy"], after["points_xy"]))
+
+
+def test_roadmark_thresholds_select_classes_independently() -> None:
+    logits = torch.full((1, 3, 16, 16), -10.0)
+    for class_id in (0, 1):
+        logits[0, class_id, 2:15, 7] = 1.0
+    baseline = decode_roadmark_points(logits, [_meta()])[0]
+    selected = decode_roadmark_points(logits, [_meta()],
+                                      threshold=(0.5, 0.8, 0.5))[0]
+    assert {line["class_name"] for line in baseline} == {"white_lane", "yellow_lane"}
+    assert [line["class_name"] for line in selected] == ["white_lane"]
+
+
+def test_smoothing_reduces_trace_jitter_without_moving_ends() -> None:
+    logits = torch.full((1, 3, 16, 16), -10.0)
+    for row in range(2, 15):
+        logits[0, 0, row, 6 + row % 2] = 10.0
+    raw = decode_roadmark_points(logits, [_meta()])[0]
+    smooth = decode_roadmark_points(logits, [_meta()], localization="smooth")[0]
+    assert len(raw) == len(smooth) == 1
+    before, after = raw[0]["points_xy"], smooth[0]["points_xy"]
+    assert len(before) == len(after)
+    assert before[0] == after[0] and before[-1] == after[-1]
+    assert sum(abs(a[0] - b[0]) for a, b in zip(after, after[1:])) < sum(
+        abs(a[0] - b[0]) for a, b in zip(before, before[1:])
+    )
 
 
 def test_two_signal_classes_survive_raw_image_decode() -> None:

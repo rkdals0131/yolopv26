@@ -38,13 +38,14 @@ def _path(value: str | Path) -> Path:
     return value.resolve() if value.is_absolute() else (REPO_ROOT / value).resolve()
 
 
-def _output_directory(path: Path) -> Path:
-    root = ARTIFACT_ROOT.resolve()
+def _output_directory(path: Path, artifact_root: Path | None = None) -> Path:
+    root_path = artifact_root or ARTIFACT_ROOT
+    root = root_path.expanduser().resolve()
     if not root.is_dir():
-        raise RuntimeError(f"artifact storage is unavailable: {ARTIFACT_ROOT}")
+        raise RuntimeError(f"artifact storage is unavailable: {root_path}")
     resolved = path.expanduser().resolve()
     if not resolved.is_relative_to(root):
-        raise ValueError(f"training output must be under {ARTIFACT_ROOT}")
+        raise ValueError(f"training output must be under {root_path}")
     if shutil.disk_usage(root).free < 1024 ** 3:
         raise RuntimeError("less than 1 GiB is available for training checkpoints")
     resolved.mkdir(parents=True, exist_ok=True)
@@ -95,7 +96,8 @@ def optimizer_groups(model: PV26FocusedModel, train_cfg: dict) -> list[dict]:
 
 
 def _evaluate(model, criterion, loader, cfg: dict, *, step: int, scope: str,
-              checkpoint: str) -> dict:
+              checkpoint: str, roadmark_localization: str = "grid",
+              roadmark_threshold: float | tuple[float, float, float] = 0.5) -> dict:
     train = cfg["train"]
     device = torch.device(train["device"])
     precision = {"bfloat16": "bf16", "float16": "fp16", "float32": "fp32"}.get(
@@ -118,24 +120,42 @@ def _evaluate(model, criterion, loader, cfg: dict, *, step: int, scope: str,
     result = evaluate_focused(
         model, criterion, loader, device=device, precision=precision,
         geometry_tolerance_px=float(train.get("geometry_tolerance_px", 8.0)),
-        on_progress=progress,
+        on_progress=progress, roadmark_localization=roadmark_localization,
+        roadmark_threshold=roadmark_threshold,
+        roadmark_decode=train.get("roadmark_decode"),
     )
     result.update(global_step=step, scope=scope, checkpoint=checkpoint,
                   elapsed_sec=time.monotonic() - started)
     return result
 
 
-def evaluate_checkpoint(output: Path, cfg: dict, role: str, *, dataset=None) -> dict:
+def evaluate_checkpoint(output: Path, cfg: dict, role: str, *, dataset=None,
+                        eval_stage: str | None = None, eval_index_run: Path | None = None,
+                        eval_samples_per_source: int | None = None,
+                        roadmark_localization: str = "grid",
+                        roadmark_threshold: float | tuple[float, float, float] = 0.5,
+                        eval_output: Path | None = None) -> dict:
     """Evaluate every saved validation sample, without updating training state."""
     checkpoint = torch.load(output / "checkpoints" / f"{role}.pt", map_location="cpu", weights_only=False)
-    stage = checkpoint["stage"]
+    stage = eval_stage or checkpoint["stage"]
+    name = (f"validation_full_{role}.json" if eval_stage is None and eval_index_run is None
+            and roadmark_localization == "grid"
+            else f"validation_full_{stage}_{role}_{roadmark_localization}.json")
+    destination = (output / eval_output).resolve() if eval_output is not None else output / name
+    if eval_output is not None:
+        if not destination.is_relative_to(output.resolve()):
+            raise ValueError("evaluation output must stay inside its run directory")
+        if destination.exists():
+            raise FileExistsError(f"evaluation output already exists: {destination}")
     if dataset is None:
         sources = [FocusedSource(**{**s, "root": Path(s["root"])}) for s in cfg["data"]["sources"]]
         if stage != "joint":
             kind = "traffic" if stage == "detector" else "roadmark"
             sources = [source for source in sources if source.kind == kind]
         dataset = FocusedDataset(sources, split="val", image_hw=tuple(cfg["model"]["image_hw"]),
-                                 index_path=output / "val_samples.jsonl")
+                                 index_path=(eval_index_run or output) / "val_samples.jsonl")
+    if eval_samples_per_source is not None:
+        dataset = validation_subset(dataset, eval_samples_per_source)
     model = PV26FocusedModel(**checkpoint["model_config"])
     model.load_state_dict(checkpoint["model"])
     model.set_train_stage(stage)
@@ -144,14 +164,22 @@ def evaluate_checkpoint(output: Path, cfg: dict, role: str, *, dataset=None) -> 
     criterion = PV26FocusedLoss(
         model, det_weight=float(train.get("det_loss_weight", 1.0)),
         roadmark_weight=float(train.get("roadmark_loss_weight", 1.0)),
+        detector_loss_schedule=str(train.get("detector_loss_schedule", "restart")),
     )
     step = int(checkpoint["global_step"])
     criterion.set_progress(step, int(train["max_steps"]))
     del checkpoint
     loader = _loader(dataset, cfg["data"], batch_size=max(1, min(int(cfg["train"]["microbatch_size"]), 4)))
     try:
-        result = _evaluate(model, criterion, loader, cfg, step=step, scope="full", checkpoint=role)
-        atomic_write_json(output / f"validation_full_{role}.json", result, ensure_ascii=False)
+        result = _evaluate(model, criterion, loader, cfg, step=step, scope="full",
+                           checkpoint=role, roadmark_localization=roadmark_localization,
+                           roadmark_threshold=roadmark_threshold)
+        result.update(evaluation_stage=stage,
+                      evaluation_index_run=str(eval_index_run or output),
+                      evaluation_samples_per_source=eval_samples_per_source,
+                      roadmark_localization=roadmark_localization,
+                      roadmark_threshold=roadmark_threshold)
+        atomic_write_json(destination, result, ensure_ascii=False)
         print(json.dumps({"validation": result}, ensure_ascii=False), flush=True)
         return result
     finally:
@@ -222,21 +250,27 @@ def _recompute_batch_norm(model, loader, *, device: torch.device, precision: str
 
 
 def _run_output(args: argparse.Namespace) -> Path:
+    artifact_root = _path(args.artifact_root) if getattr(args, "artifact_root", None) else None
     if args.resume_run is not None:
-        return _output_directory(_path(args.resume_run))
+        return _output_directory(_path(args.resume_run), artifact_root)
     if args.output_dir is not None:
-        return _output_directory(_path(args.output_dir))
+        return _output_directory(_path(args.output_dir), artifact_root)
     with _path(args.config).open(encoding="utf-8") as stream:
         config = yaml.safe_load(stream)
     stage = args.stage or config["train"]["stage"]
     name = datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + stage
-    return _output_directory(_path(config["train"]["output_root"]) / name)
+    root = artifact_root or _path(config["train"]["output_root"])
+    return _output_directory(root / name, artifact_root)
 
 
 def _configuration(args: argparse.Namespace, output: Path) -> dict:
     if args.resume_run is not None:
         if (args.initial_checkpoint is not None or args.stage is not None
-                or args.sample_limit is not None or getattr(args, "seed", None) is not None):
+                or args.sample_limit is not None or getattr(args, "seed", None) is not None
+                or getattr(args, "index_run", None) is not None
+                or getattr(args, "detector_loss_schedule", None) is not None
+                or any(getattr(args, key, None) is not None
+                       for key in ("backbone_lr", "head_lr", "roadmark_lr"))):
             raise ValueError("resume uses the saved stage, dataset, and seed; start a new run to change them")
         cfg = read_json(output / "run_config.json")
     else:
@@ -246,16 +280,28 @@ def _configuration(args: argparse.Namespace, output: Path) -> dict:
         for source in cfg["data"]["sources"]:
             source["root"] = str(_path(source["root"]))
         cfg["data"]["sample_limit_per_source"] = args.sample_limit
+        index_run = getattr(args, "index_run", None) or cfg["data"].get("index_run")
+        if index_run is not None:
+            if args.sample_limit is not None:
+                raise ValueError("a saved sample index cannot be combined with --sample-limit")
+            cfg["data"]["index_run"] = str(_path(index_run))
         if getattr(args, "seed", None) is not None:
             cfg["data"]["seed"] = args.seed
         if args.stage is not None:
             cfg["train"]["stage"] = args.stage
+        if getattr(args, "detector_loss_schedule", None) is not None:
+            cfg["train"]["detector_loss_schedule"] = args.detector_loss_schedule
+        for key in ("backbone_lr", "head_lr", "roadmark_lr"):
+            value = getattr(args, key, None)
+            if value is not None:
+                cfg["train"][key] = value
         if (output / "run_config.json").exists():
             raise FileExistsError(f"run already exists; use --resume-run: {output}")
         if any((output / name).exists() for name in
                ("train_samples.jsonl", "val_samples.jsonl", "checkpoints")):
             raise FileExistsError(f"run artifacts already exist; use a new output directory: {output}")
-        cfg["initial_checkpoint"] = str(_path(args.initial_checkpoint)) if args.initial_checkpoint else None
+        initial_checkpoint = args.initial_checkpoint or cfg.get("initial_checkpoint")
+        cfg["initial_checkpoint"] = str(_path(initial_checkpoint)) if initial_checkpoint else None
     if args.device is not None:
         cfg["train"]["device"] = args.device
     if args.num_workers is not None:
@@ -284,7 +330,8 @@ def _train_locked(args: argparse.Namespace, output: Path) -> dict:
     precision = {"bfloat16": "bf16", "float16": "fp16", "float32": "fp32"}.get(train_cfg["amp_dtype"], train_cfg["amp_dtype"])
     if precision == "bf16" and device.type == "cuda" and not torch.cuda.is_bf16_supported():
         raise RuntimeError("BF16 is unavailable; choose fp16 or fp32 in the training configuration")
-    sources = [FocusedSource(**{**item, "root": Path(item["root"])}) for item in data_cfg["sources"]]
+    all_sources = [FocusedSource(**{**item, "root": Path(item["root"])}) for item in data_cfg["sources"]]
+    sources = all_sources
     stage = train_cfg["stage"]
     if stage != "joint":
         kind = "traffic" if stage == "detector" else "roadmark"
@@ -297,10 +344,17 @@ def _train_locked(args: argparse.Namespace, output: Path) -> dict:
         index = output / f"{split}_samples.jsonl"
         if args.resume_run is not None and has_checkpoint and not index.is_file():
             raise FileNotFoundError(f"committed run sample index not found: {index}")
-        dataset = FocusedDataset(sources, split=split, image_hw=image_hw,
+        source_index = (Path(data_cfg["index_run"]) / f"{split}_samples.jsonl"
+                        if not index.is_file() and data_cfg.get("index_run") else None)
+        dataset = FocusedDataset(all_sources if source_index is not None else sources,
+            split=split, image_hw=image_hw,
             seed=seed, augment=bool(data_cfg["augment"] and split == "train"),
-            sample_limit_per_source=None if index.is_file() else data_cfg.get("sample_limit_per_source"),
-            index_path=index if index.is_file() else None)
+            roadmark_target_sigma_cells=(
+                float(data_cfg.get("roadmark_target_sigma_cells", 0.0)) if split == "train" else 0.0),
+            sample_limit_per_source=None if index.is_file() or source_index is not None
+                else data_cfg.get("sample_limit_per_source"),
+            index_path=index if index.is_file() else source_index,
+            selected_kind=kind if source_index is not None and stage != "joint" else None)
         if not index.is_file():
             dataset.save_index(index)
         datasets.append(dataset)
@@ -319,6 +373,13 @@ def _train_locked(args: argparse.Namespace, output: Path) -> dict:
     criterion = PV26FocusedLoss(
         model, det_weight=float(train_cfg.get("det_loss_weight", 1.0)),
         roadmark_weight=float(train_cfg.get("roadmark_loss_weight", 1.0)),
+        detector_loss_schedule=str(train_cfg.get("detector_loss_schedule", "restart")),
+        roadmark_dice=str(train_cfg.get("roadmark_dice", "linear")),
+    )
+    evaluation_criterion = PV26FocusedLoss(
+        model, det_weight=float(train_cfg.get("det_loss_weight", 1.0)),
+        roadmark_weight=float(train_cfg.get("roadmark_loss_weight", 1.0)),
+        detector_loss_schedule=str(train_cfg.get("detector_loss_schedule", "restart")),
     )
     planned_steps = int(train_cfg["max_steps"])
     optimizer, scheduler = _optimizer_and_scheduler(model, train_cfg, planned_steps)
@@ -354,20 +415,33 @@ def _train_locked(args: argparse.Namespace, output: Path) -> dict:
     stop_at = min(planned_steps, trainer.global_step + args.steps) if args.steps is not None else planned_steps
     started = time.monotonic()
     starting_step = trainer.global_step
+    miner = None
+    if data_cfg.get("hard_negative_mining"):
+        from model.engine.hard_negative_mining import StopNegativeMiner
+        mining_config = dict(data_cfg["hard_negative_mining"])
+        mining_config["positive_index"] = str(_path(mining_config["positive_index"]))
+        # A mined negative is an image whose false positive survives evaluation decoding.
+        mining_config["roadmark_decode"] = train_cfg.get("roadmark_decode") or {}
+        miner = StopNegativeMiner(datasets[0], sampler, mining_config, output)
     validation = None
     roadmark_best_path = checkpoints / "best_roadmark.pt"
+    stop_best_path = checkpoints / "best_stop_line.pt"
     roadmark_best = None
+    stop_best = None
     if stage == "joint" and roadmark_best_path.is_file():
         roadmark_best = float(torch.load(roadmark_best_path, map_location="cpu", weights_only=False)["metric"])
+    if stage == "joint" and stop_best_path.is_file():
+        stop_best = float(torch.load(stop_best_path, map_location="cpu", weights_only=False)["metric"])
 
     def validate() -> None:
-        nonlocal validation, roadmark_best
+        nonlocal validation, roadmark_best, stop_best
         trainer.begin_evaluation()
         try:
             if bn_loader is not None:
                 _recompute_batch_norm(model, bn_loader, device=device, precision=precision)
+            evaluation_criterion.set_progress(trainer.global_step, planned_steps)
             validation = _evaluate(
-                model, criterion, val_loader, cfg, step=trainer.global_step,
+                model, evaluation_criterion, val_loader, cfg, step=trainer.global_step,
                 scope="periodic", checkpoint="current",
             )
             validation["balanced_task_f1"] = 0.5 * (
@@ -384,6 +458,12 @@ def _train_locked(args: argparse.Namespace, output: Path) -> dict:
                         "global_step": trainer.global_step, "stage": stage,
                         "model_config": model.model_config(), "run_metadata": cfg}, roadmark_best_path)
                     roadmark_best = score
+                stop_score = float(validation["roadmark_lines"]["stop_line"]["f1"])
+                if stop_best is None or stop_score > stop_best:
+                    _atomic_save({"model": model.state_dict(), "metric": stop_score, "mode": "max",
+                        "global_step": trainer.global_step, "stage": stage,
+                        "model_config": model.model_config(), "run_metadata": cfg}, stop_best_path)
+                    stop_best = stop_score
             selected = trainer.update_best(float(validation["selection_metric"]))
             if bn_loader is not None and not selected:
                 # ScheduleFree checkpoints contain evaluation weights. Publish the
@@ -393,7 +473,7 @@ def _train_locked(args: argparse.Namespace, output: Path) -> dict:
         finally:
             trainer.end_evaluation()
 
-    def on_step(current: FocusedTrainer, summary: dict) -> None:
+    def on_step(current: FocusedTrainer, summary: dict) -> bool:
         progress_every = int(os.environ.get("YOLOPV26_PROGRESS_EVERY", train_cfg["log_every"]))
         if current.global_step % progress_every == 0 or current.global_step == starting_step + 1:
             elapsed = time.monotonic() - started
@@ -403,9 +483,17 @@ def _train_locked(args: argparse.Namespace, output: Path) -> dict:
         interval = int(train_cfg["validation_every"])
         if interval > 0 and current.global_step % interval == 0:
             validate()
+        if miner is not None and miner.due(current.global_step) and not current._stop_requested:
+            return miner.refresh(current)
+        return False
+
+    def on_start(current: FocusedTrainer) -> None:
+        if miner is not None and miner.due(current.global_step):
+            miner.refresh(current)
 
     try:
-        summary = trainer.fit(train_loader, max_steps=stop_at, planned_steps=planned_steps, on_step=on_step)
+        summary = trainer.fit(train_loader, max_steps=stop_at, planned_steps=planned_steps,
+                              on_step=on_step, on_start=on_start)
         if (not summary["stopped_by_signal"] and trainer.global_step > starting_step
                 and (validation is None or validation["global_step"] != trainer.global_step)):
             validate()
@@ -424,11 +512,11 @@ def _train_locked(args: argparse.Namespace, output: Path) -> dict:
                 _stop_loader(bn_loader)
             # Release the training optimizer and model before loading each
             # evaluation checkpoint. Final scores never enter periodic selection.
-            del trainer, optimizer, scheduler, criterion, model
+            del trainer, optimizer, scheduler, criterion, evaluation_criterion, model
             if device.type == "cuda":
                 torch.cuda.empty_cache()
             full = {}
-            for role in ("latest", "best", "best_roadmark"):
+            for role in ("latest", "best", "best_roadmark", "best_stop_line"):
                 if (checkpoints / f"{role}.pt").is_file():
                     full[role] = evaluate_checkpoint(output, cfg, role, dataset=datasets[1])
             summary["full_validation"] = full
@@ -444,18 +532,40 @@ def _train_locked(args: argparse.Namespace, output: Path) -> dict:
 def main(argv: list[str] | None = None) -> dict:
     parser = argparse.ArgumentParser(description="Train the two-signal and three-roadmark PV26 model.")
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
+    parser.add_argument("--artifact-root", type=Path,
+                        help="Existing root containing all outputs for this run.")
     destination = parser.add_mutually_exclusive_group()
     destination.add_argument("--output-dir", type=Path)
     destination.add_argument("--resume-run", type=Path)
     parser.add_argument("--initial-checkpoint", type=Path)
+    parser.add_argument("--index-run", type=Path,
+                        help="Use and snapshot the train/val sample lists of an earlier run.")
+    parser.add_argument("--detector-loss-schedule", choices=("restart", "mature"),
+                        help="Choose the detector's one-to-many loss mix for a new run.")
+    parser.add_argument("--backbone-lr", type=float)
+    parser.add_argument("--head-lr", type=float)
+    parser.add_argument("--roadmark-lr", type=float)
     parser.add_argument("--stage", choices=("detector", "roadmark", "joint"))
     parser.add_argument("--device")
     parser.add_argument("--num-workers", type=int)
     parser.add_argument("--microbatch-size", type=int)
     parser.add_argument("--steps", type=int, help="Stop after this many additional optimizer updates.")
     parser.add_argument("--sample-limit", type=int, help="Limit samples per source for a short development run.")
-    parser.add_argument("--evaluate-only", choices=("latest", "best", "best_roadmark"),
+    parser.add_argument("--evaluate-only", choices=("latest", "best", "best_roadmark", "best_stop_line"),
                         help="With --resume-run, evaluate a checkpoint on its entire saved validation set.")
+    parser.add_argument("--eval-index-run", type=Path,
+                        help="Evaluate on another run's saved validation list.")
+    parser.add_argument("--eval-stage", choices=("joint",),
+                        help="Evaluate both tasks even for a roadmark-stage checkpoint.")
+    parser.add_argument("--eval-samples-per-source", type=int,
+                        help="Use the same evenly spread development subset from each source.")
+    parser.add_argument("--roadmark-localization", choices=("grid", "subpixel", "smooth"),
+                        help="Compare line coordinates without changing model weights.")
+    parser.add_argument("--roadmark-thresholds", type=float, nargs=3,
+                        metavar=("WHITE", "YELLOW", "STOP"),
+                        help="Compare class thresholds without changing model weights.")
+    parser.add_argument("--eval-output", type=Path,
+                        help="Write a named evaluation JSON inside the selected run.")
     parser.add_argument("--seed", type=int, help="Override the data, augmentation, and initialization seed.")
     args = parser.parse_args(argv)
     if args.steps is not None and args.steps < 1:
@@ -465,11 +575,30 @@ def main(argv: list[str] | None = None) -> dict:
                 (args.steps, args.stage, args.sample_limit, args.initial_checkpoint,
                  args.output_dir, args.seed)):
             parser.error("--evaluate-only requires --resume-run and cannot change the run or dataset")
+        if args.index_run is not None:
+            parser.error("--index-run creates a new training run; use --eval-index-run for evaluation")
+        if (args.detector_loss_schedule is not None or any(value is not None for value in
+                (args.backbone_lr, args.head_lr, args.roadmark_lr))):
+            parser.error("training loss and learning-rate overrides require a new run")
+        if args.roadmark_thresholds is not None and args.eval_output is None:
+            parser.error("--roadmark-thresholds requires --eval-output")
+        if args.eval_samples_per_source is not None and args.eval_samples_per_source < 1:
+            parser.error("--eval-samples-per-source must be positive")
         output = _run_output(args)
         with training_run_lock(output):
             cfg = _configuration(args, output)
-            result = evaluate_checkpoint(output, cfg, args.evaluate_only)
+            result = evaluate_checkpoint(output, cfg, args.evaluate_only,
+                eval_stage=args.eval_stage,
+                eval_index_run=_path(args.eval_index_run) if args.eval_index_run else None,
+                eval_samples_per_source=args.eval_samples_per_source,
+                roadmark_localization=args.roadmark_localization or "grid",
+                roadmark_threshold=tuple(args.roadmark_thresholds) if args.roadmark_thresholds else 0.5,
+                eval_output=args.eval_output)
     else:
+        if any(value is not None for value in (args.eval_index_run, args.eval_stage,
+                args.eval_samples_per_source, args.roadmark_localization,
+                args.roadmark_thresholds, args.eval_output)):
+            parser.error("evaluation options require --evaluate-only")
         result = train(args)
     print(json.dumps(result, indent=2, ensure_ascii=False))
     return result

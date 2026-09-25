@@ -1,0 +1,92 @@
+# v2 long run (2026-09-25). Changes from pv26_full_data_360k.yaml:
+# - Periodic validation and checkpoint selection use the dev half of validation
+#   (sequence blocks, sample_id // 1000); runs/20260925_val_test_index holds the
+#   held-out test half for the final report.
+# - Road-marking lines are decoded in both scan directions (orientation: auto),
+#   with per-class line score filters tuned on the dev half for the start model.
+#   Mining uses the same decoding, so a hard negative is a false positive that
+#   evaluation would count.
+# - Hard negatives rise 3% -> 4.5% -> 6% of all draws (was 25% -> 50%). Filtered
+#   decoding flags about 2.7% of negatives (~6k images); at 6% each mined image
+#   gets ~115 draws over the run versus ~60 per stop-line positive, and about
+#   47% of draws stay on ordinary roadmark images for lane learning.
+# 360k updates at batch 32, about 60-70 hours on this RTX 4060.
+model:
+  weights: yolo26s.pt
+  variant: s
+  roadmark_width: 64
+  image_hw:
+  - 608
+  - 800
+data:
+  sources:
+  - name: traffic_aihub
+    kind: traffic
+    root: seg_dataset/AIHUB/신호등-도로표지판 인지 영상(수도권)
+    weight: 1.0
+  - name: roadmark_aihub
+    kind: roadmark
+    root: seg_dataset/AIHUB/차선-횡단보도 인지 영상(수도권)
+    weight: 2.0
+  seed: 26
+  sampling_strategy: random_with_replacement
+  num_workers: 4
+  prefetch_factor: 2
+  pin_memory: true
+  augment: true
+  index_run: runs/20260925_v2_index
+  roadmark_target_sigma_cells: 0.5
+  hard_negative_mining:
+    source: roadmark_aihub
+    positive_index: runs/20260924_stop_positive_soft_0p5_12k/train_samples.jsonl
+    initial_samples: 0
+    refresh_samples: 50000
+    interval_steps: 8000
+    hard_fractions:
+    - 0.03
+    - 0.045
+    - 0.06
+    positive_fraction: 0.13333333333333333
+    batch_size: 8
+    num_workers: 4
+train:
+  device: cuda:0
+  amp_dtype: bfloat16
+  stage: joint
+  logical_batch_size: 32
+  microbatch_size: 20
+  max_steps: 360000
+  optimizer: adamw
+  lr_schedule: cosine
+  gradient_strategy: sum
+  detector_loss_schedule: mature
+  roadmark_dice: squared
+  backbone_lr: 9.0e-06
+  head_lr: 9.0e-05
+  roadmark_lr: 0.00027
+  det_loss_weight: 1.0
+  roadmark_loss_weight: 1.0
+  weight_decay: 0.0001
+  grad_clip_norm: 5.0
+  checkpoint_interval_sec: 600
+  max_consecutive_failures: 3
+  log_every: 100
+  validation_every: 4000
+  validation_samples_per_source: 2048
+  geometry_tolerance_px: 8.0
+  output_root: runs
+  roadmark_decode:
+    orientation: auto
+    max_gap:
+    - 3
+    - 3
+    - 6
+    min_score:
+    - 0.7
+    - 0.75
+    - 0.75
+    min_length_px:
+    - 0.0
+    - 0.0
+    - 0.0
+initial_checkpoint: runs/20260924_stop_positive_soft_0p5_12k/checkpoints/best.pt

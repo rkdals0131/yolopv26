@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import Counter
 from contextlib import nullcontext
 from itertools import islice
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 import torch
 from torchvision.ops import box_iou
@@ -26,6 +26,9 @@ def evaluate_focused(model, criterion, loader, *, device: torch.device,
                      precision: str = "bf16", max_batches: int | None = None,
                      confidence: float = 0.25, iou_threshold: float = 0.5,
                      geometry_tolerance_px: float = 8.0,
+                     roadmark_threshold: float | tuple[float, float, float] = 0.5,
+                     roadmark_localization: str = "grid",
+                     roadmark_decode: Mapping[str, Any] | None = None,
                      on_progress: Callable[[int], None] | None = None) -> dict[str, Any]:
     was_training = model.training
     model.eval()
@@ -93,7 +96,10 @@ def evaluate_focused(model, criterion, loader, *, device: torch.device,
                     road_counts[class_id][0] += int((p & t & v).sum())
                     road_counts[class_id][1] += int((p & ~t & v).sum())
                     road_counts[class_id][2] += int((~p & t & v).sum())
-                lines = decode_roadmark_points(output["roadmark_logits"], batch["meta"])
+                lines = decode_roadmark_points(output["roadmark_logits"], batch["meta"],
+                                               threshold=roadmark_threshold,
+                                               localization=roadmark_localization,
+                                               **dict(roadmark_decode or {}))
                 for image_index, predicted_lines in enumerate(lines):
                     supervised = valid[image_index].flatten(1).any(dim=1).tolist()
                     if not any(supervised):
@@ -109,11 +115,15 @@ def evaluate_focused(model, criterion, loader, *, device: torch.device,
                 on_progress(samples)
     finally:
         model.train(was_training)
-        shutdown = getattr(batches, "_shutdown_workers", None)
-        if shutdown is not None:
-            shutdown()
-        if getattr(loader, "_iterator", None) is batches:
-            loader._iterator = None
+        # Periodic validation reuses a persistent DataLoader. Closing its
+        # workers after every pass leaks multiprocessing pipes in PyTorch.
+        # The owner closes that loader when the training run ends.
+        if not getattr(loader, "persistent_workers", False):
+            shutdown = getattr(batches, "_shutdown_workers", None)
+            if shutdown is not None:
+                shutdown()
+            if getattr(loader, "_iterator", None) is batches:
+                loader._iterator = None
     detection = {name: _scores(*values) for name, values in zip(SIGNAL_CLASSES, det_counts)}
     roadmark = {name: _scores(*values) for name, values in zip(ROADMARK_CLASSES, road_counts)}
     det_total = _scores(*(sum(values[index] for values in det_counts) for index in range(3)))

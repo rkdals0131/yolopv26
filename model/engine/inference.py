@@ -17,11 +17,13 @@ from model.signal_attr.runtime import SignalAttrRuntime
 
 class FocusedPerception:
     def __init__(self, model: PV26FocusedModel, *, image_hw=DEFAULT_IMAGE_HW,
-                 device: str = "cpu", signal: SignalAttrRuntime | None = None) -> None:
+                 device: str = "cpu", signal: SignalAttrRuntime | None = None,
+                 roadmark_decode: dict | None = None) -> None:
         self.device = torch.device(device)
         self.model = model.to(self.device).eval()
         self.image_hw = tuple(image_hw)
         self.signal = signal
+        self.roadmark_decode = dict(roadmark_decode or {})
 
     @classmethod
     def from_checkpoint(cls, path: Path, *, device: str = "cpu",
@@ -32,11 +34,15 @@ class FocusedPerception:
         metadata = checkpoint.get("run_metadata") or {}
         image_hw = metadata.get("model", {}).get("image_hw", DEFAULT_IMAGE_HW)
         signal = SignalAttrRuntime.from_checkpoint(signal_checkpoint, device=device) if signal_checkpoint else None
-        return cls(model, image_hw=image_hw, device=device, signal=signal)
+        # The run's decoding profile travels with its weights.
+        roadmark_decode = metadata.get("train", {}).get("roadmark_decode")
+        return cls(model, image_hw=image_hw, device=device, signal=signal,
+                   roadmark_decode=roadmark_decode)
 
     @torch.inference_mode()
     def predict(self, images: Sequence[Image.Image], *, confidence: float = 0.25,
-                roadmark_threshold: float = 0.5) -> list[dict]:
+                roadmark_threshold: float | Sequence[float] = 0.5,
+                roadmark_localization: str = "grid") -> list[dict]:
         if not images:
             return []
         prepared = [letterbox_focused_image(image, self.image_hw) for image in images]
@@ -44,7 +50,10 @@ class FocusedPerception:
         meta = [metadata for _, metadata in prepared]
         outputs = self.model(batch)
         detections = decode_focused_detections(outputs["det"], meta, conf_threshold=confidence)
-        roadmarks = decode_roadmark_points(outputs["roadmark_logits"], meta, threshold=roadmark_threshold)
+        roadmarks = decode_roadmark_points(outputs["roadmark_logits"], meta,
+                                            threshold=roadmark_threshold,
+                                            localization=roadmark_localization,
+                                            **self.roadmark_decode)
         results = []
         for image, image_meta, boxes, lines in zip(images, meta, detections, roadmarks):
             for detection_id, detection in enumerate(boxes):
