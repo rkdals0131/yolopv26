@@ -1,0 +1,59 @@
+{
+  "format_version": 1,
+  "model_type": "SignalAttrCropClassifier",
+  "checkpoint": "/home/user1/ROS2_Workspace/ros2_ws/src/yolopv26/models/signal_attr/competition_20260923.pt",
+  "checkpoint_sha256": "d0600afbaee49028123f5fae1e85760eb3cb95ac43a5e891a5d6ae360502df4a",
+  "onnx": "signal_attr.onnx",
+  "max_batch": 16,
+  "input": {
+    "name": "crops",
+    "layout": "NCHW",
+    "dtype": "float32",
+    "color": "rgb",
+    "size": 128,
+    "normalization": "imagenet",
+    "mean": [
+      0.485,
+      0.456,
+      0.406
+    ],
+    "std": [
+      0.229,
+      0.224,
+      0.225
+    ]
+  },
+  "crop": {
+    "clip_to_image": true,
+    "color_space": "rgb",
+    "input_size": 128,
+    "interpolation": "bilinear",
+    "min_crop_side_px": 4,
+    "normalization": "imagenet",
+    "padding_ratio": 0.15
+  },
+  "threshold_policy": {
+    "name": "signal_attr_v1",
+    "base_color_min_confidence": 0.75,
+    "arrow_threshold": 0.5,
+    "arrow_ambiguity_band": 0.1
+  },
+  "state_semantics": "left_arrow",
+  "all_off_is_valid": true,
+  "base_colors": [
+    "off",
+    "red",
+    "yellow",
+    "green"
+  ],
+  "tl_bits": [
+    "red",
+    "yellow",
+    "green",
+    "arrow"
+  ],
+  "verification": {
+    "base_color_logits": 1.9073486328125e-06,
+    "arrow_logit": 2.8908252716064453e-06
+  }
+}

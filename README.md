@@ -30,6 +30,6 @@ SignalAttr의 crop 생성과 학습 설정은 [signal_attr.yaml](config/signal_a
 - [80k 이후 연구·실험 설계와 인수인계](docs/20260923_PV26_STAGE2_RESEARCH.md)
 - [수동주행 MCAP 최종 평가 설계](docs/20260923_MCAP_FINAL_EVALUATION_PROTOCOL.md)
 
-[SignalAttr](models/signal_attr/README.md)의 기준 가중치는 저장소에 포함한다. 본체 초기화에는 저장소 루트의 `yolo26s.pt`를 사용한다. 학습한 체크포인트는 초기 가중치 파일 없이 다시 불러올 수 있다.
+[SignalAttr](models/signal_attr/README.md)의 기준 가중치는 저장소에 포함한다. ROS 추론에 사용할 PV26 본체와 SignalAttr 체크포인트는 각각 `models/pv26/competition_20260924.pt`, `models/signal_attr/competition_20260923.pt`에 둔다. `pv26_ros`는 이 경로를 저장소 루트 기준 상대경로로 읽는다. 본체 초기화에는 저장소 루트의 `yolo26s.pt`를 사용한다. 학습한 체크포인트는 초기 가중치 파일 없이 다시 불러올 수 있다.
 
 이전 코드와 설정은 [legacy](legacy/README.md), 과거 설계는 [보관 문서](docs/legacy/README.md), 실험 결과는 [history](docs/history/README.md)에 있다.

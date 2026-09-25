@@ -1,0 +1,94 @@
+{
+  "format_version": 1,
+  "model_type": "PV26FocusedModel",
+  "checkpoint": "/home/user1/ROS2_Workspace/ros2_ws/src/yolopv26/models/pv26/competition_20260924_decode_v2.pt",
+  "checkpoint_sha256": "11a6aa44f664e3e9ba5a3408ac6c3a8e648e1b3c13a81f60f604bc20dcb5286a",
+  "global_step": 2600,
+  "onnx": "pv26.onnx",
+  "batch_size": 2,
+  "input": {
+    "name": "image",
+    "layout": "NCHW",
+    "dtype": "float32",
+    "range": [
+      0,
+      1
+    ],
+    "color": "rgb",
+    "image_hw": [
+      608,
+      800
+    ],
+    "letterbox": {
+      "pad_value": 114,
+      "resize": "bilinear",
+      "align": "center"
+    }
+  },
+  "outputs": {
+    "detections": {
+      "shape": [
+        2,
+        300,
+        6
+      ],
+      "columns": [
+        "x1",
+        "y1",
+        "x2",
+        "y2",
+        "confidence",
+        "class_id"
+      ],
+      "coordinates": "network_pixels"
+    },
+    "roadmark_logits": {
+      "shape": [
+        2,
+        3,
+        152,
+        200
+      ],
+      "stride": 4
+    }
+  },
+  "signal_classes": [
+    "vehicle_signal",
+    "pedestrian_signal"
+  ],
+  "detection_confidence": 0.25,
+  "roadmark_classes": [
+    "white_lane",
+    "yellow_lane",
+    "stop_line"
+  ],
+  "roadmark_decode": {
+    "threshold": [
+      0.5,
+      0.5,
+      0.5
+    ],
+    "min_points": 6,
+    "localization": "grid",
+    "orientation": "auto",
+    "max_gap": [
+      3,
+      3,
+      6
+    ],
+    "min_score": [
+      0.7,
+      0.75,
+      0.75
+    ],
+    "min_length_px": [
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "verification": {
+    "roadmark_logits_max_abs_error": 3.62396240234375e-05,
+    "detections_max_abs_error": 790.97998046875
+  }
+}

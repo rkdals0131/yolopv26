@@ -10,6 +10,7 @@
 | [학습과 평가](6_TRAINING_AND_EVALUATION.md) | 데이터 공급, 정밀도, OOM 대응, 재개와 저장 |
 | [실행 안내](7_RUN_GUIDE.md) | check_env TUI, 학습, 재개, SignalAttr, 내보내기와 추론 명령 |
 | [추론 처리시간](8_INFERENCE_PERFORMANCE.md) | 첫 호출과 반복 실행의 지연시간, 후처리 병목과 최적화 순서 |
+| [27개 학습 방법론 분석](9_TRAINING_METHOD_ANALYSIS_20260922.md) | v2의 설정별 결과, 모델·데이터와의 관계, 원인 가설과 비교 한계 |
 | [80k 이후 연구·실험 설계](20260923_PV26_STAGE2_RESEARCH.md) | 문헌 근거, 파인튜닝·데이터·손실·표현 비교, 예산과 다음 에이전트 인수인계 |
 | [후속 파인튜닝 정식 DoE](20260923_PV26_FORMAL_DOE.md) | 6개 pilot의 한계, 87회 후보 행렬, 3-seed 반복·교차 효과 분석과 자동 실행 |
 | [수동주행 MCAP 최종 평가](20260923_MCAP_FINAL_EVALUATION_PROTOCOL.md) | 260920 14:07:38 기록, 최종 평가 분리, 라벨·신호등 상태·시간 안정성 지표 |
