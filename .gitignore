@@ -13,6 +13,7 @@
 *.weights
 !models/signal_attr/best_signal_attr.pt
 !models/pv26/competition_20260924.pt
+!models/pv26/competition_20260924_decode_v2.pt
 !models/signal_attr/competition_20260923.pt
 /models/signal_attr/*.torchscript.meta.json
 checkpoints/
