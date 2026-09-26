@@ -77,6 +77,9 @@ def main() -> None:
 
     manifest = json.loads(args.manifest.read_text())
     profile = {key: manifest["roadmark_decode"][key] for key in LEGACY_PROFILE}
+    # The manifest profile with each point placement the C++ decoder implements.
+    profiles = {"manifest": profile, "legacy": LEGACY_PROFILE,
+                **{name: {**profile, "localization": name} for name in ("subpixel", "smooth")}}
     payload = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
     model = PV26FocusedModel(**payload["model_config"])
     model.load_state_dict(payload["model"])
@@ -101,10 +104,8 @@ def main() -> None:
         probability.tofile(args.output / f"{name}.prob_f16.bin")
         detections[0].numpy().astype(np.float32).tofile(args.output / f"{name}.det_f32.bin")
         decoded_input = probability.astype(np.float32)[None]
-        expected = {
-            "manifest": lines_json(decode_roadmark_probabilities(decoded_input, [meta], **profile)[0]),
-            "legacy": lines_json(decode_roadmark_probabilities(decoded_input, [meta], **LEGACY_PROFILE)[0]),
-        }
+        expected = {name: lines_json(decode_roadmark_probabilities(decoded_input, [meta], **options)[0])
+                    for name, options in profiles.items()}
         expected_detections = decode_focused_detections(
             detections, [meta], conf_threshold=float(manifest["detection_confidence"]))[0]
         signal_rows = []
@@ -145,7 +146,7 @@ def main() -> None:
                           "detections": len(expected_detections)}), flush=True)
     (args.output / "fixtures.json").write_text(json.dumps({
         "format_version": 1, "checkpoint_sha256": manifest["checkpoint_sha256"],
-        "profiles": {"manifest": profile, "legacy": LEGACY_PROFILE},
+        "profiles": profiles,
         "detection_confidence": manifest["detection_confidence"],
         "image_hw": list(image_hw), "cases": cases}, indent=1))
 
