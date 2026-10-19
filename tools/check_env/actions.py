@@ -298,6 +298,11 @@ def _train(console: Console, snapshot: dict, kind: str, *, short: bool = False,
         output = _new_output(console, snapshot, kind, "signal_attr")
         argv = _argv("train_signal_attr.py", "train", "--config", snapshot["signal_config_path"],
                      "--dataset", dataset, "--output-dir", output)
+        augment = settings["train"].get("augment")
+        if isinstance(augment, dict) and augment.get("enabled", True) and choose(
+            console, "학습 증강", (True, False), lambda value: "설정대로 사용" if value else "끄고 대조 실행",
+        ) is False:
+            argv += ("--no-augment",)
     if initial is not None:
         argv += ("--initial-checkpoint", str(initial))
     added_steps = None

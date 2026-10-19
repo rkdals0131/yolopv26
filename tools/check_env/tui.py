@@ -153,6 +153,8 @@ def _setting_rows(config: Any, kind: str) -> list[tuple[str, Any]]:
         ("검증 주기 / 표본", f"{train.get('validation_every', '?')} / {train.get('validation_samples', '?')}"),
         ("좌회전 loss 가중치", train.get("arrow_loss_weight")),
         ("표본 선택 / 모델 선택", f"{train.get('sampling', 'natural')} / {train.get('selection_metric', 'combo_accuracy')}"),
+        ("학습 증강", "사용" if isinstance(train.get("augment"), Mapping)
+         and train["augment"].get("enabled", True) else "사용 안 함"),
         ("초기 가중치", train.get("initial_checkpoint")),
         ("원본 경로 / Crop", f"{prepare.get('raw_root', '?')} / {crop.get('input_size', '?')}px"),
         ("Crop 데이터", train.get("dataset")),
