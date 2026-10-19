@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import random
 
 from PIL import Image
 import pytest
@@ -19,6 +20,12 @@ from model.signal_attr import (
     materialize_product_signal_attr_crop_dataset_from_root,
     product_signal_attr_prediction_from_logits,
     signal_attr_collate,
+)
+from model.signal_attr.augment import (
+    SignalAttrAugmentConfig,
+    augment_signal_attr_crop,
+    signal_attr_augment_config_from_mapping,
+    signal_attr_augment_config_to_dict,
 )
 
 
@@ -173,3 +180,95 @@ def test_macro_state_f1_counts_unsupported_false_left() -> None:
     assert correct["macro_state_f1"] == 1.0
     assert false_left["macro_state_f1"] == 0.5
     assert false_left["by_light_type"]["car"]["states"]["left_arrow"]["fp"] == 1
+
+
+def test_augment_keeps_size_repeats_by_seed_and_shrinks_to_source_pixels() -> None:
+    image = Image.new("RGB", (32, 32), "black")
+    image.paste((255, 0, 0), (12, 4, 20, 12))
+    image.paste((0, 255, 0), (4, 20, 12, 28))
+    everything = SignalAttrAugmentConfig(jitter_prob=1.0, photometric_prob=1.0, lowres_prob=1.0,
+                                         blur_prob=1.0, jpeg_prob=1.0)
+    first = augment_signal_attr_crop(image, [0, 0, 64, 16], random.Random(7), everything)
+    again = augment_signal_attr_crop(image, [0, 0, 64, 16], random.Random(7), everything)
+    assert first.size == (32, 32) and first.mode == "RGB"
+    assert first.tobytes() == again.tobytes()
+
+    nothing = SignalAttrAugmentConfig(jitter_prob=0.0, photometric_prob=0.0, lowres_prob=0.0,
+                                      blur_prob=0.0, jpeg_prob=0.0)
+    assert augment_signal_attr_crop(image, None, random.Random(7), nothing).tobytes() == image.tobytes()
+    # A crop already at the minimum source size has nothing farther to simulate.
+    lowres_only = SignalAttrAugmentConfig(jitter_prob=0.0, photometric_prob=0.0, lowres_prob=1.0,
+                                          blur_prob=0.0, jpeg_prob=0.0, lowres_min_short_side_px=5.0)
+    assert augment_signal_attr_crop(image, [0, 0, 5, 5], random.Random(7), lowres_only).tobytes() == image.tobytes()
+    assert augment_signal_attr_crop(image, [0, 0, 400, 400], random.Random(7), lowres_only).tobytes() != image.tobytes()
+
+
+def test_augment_config_mapping_round_trip() -> None:
+    assert signal_attr_augment_config_from_mapping(None) is None
+    assert signal_attr_augment_config_from_mapping({"enabled": False, "jitter_prob": 1.0}) is None
+    config = signal_attr_augment_config_from_mapping({"enabled": True, "jpeg_quality": [40, 80]})
+    assert config == SignalAttrAugmentConfig(jpeg_quality=(40, 80))
+    assert signal_attr_augment_config_from_mapping(signal_attr_augment_config_to_dict(config)) == config
+    with pytest.raises(ValueError, match="unknown SignalAttr augment keys"):
+        signal_attr_augment_config_from_mapping({"hflip_prob": 0.5})
+
+
+def test_augmented_training_resumes_and_reports_state_and_size_slices(tmp_path: Path) -> None:
+    crops = _materialized_crops(tmp_path)
+    augment = SignalAttrAugmentConfig(jitter_prob=1.0, lowres_prob=1.0, blur_prob=1.0, jpeg_prob=1.0)
+    options = dict(
+        logical_batch_size=2, microbatch_size=1, sampling="balanced",
+        device="cpu", precision="fp32", num_workers=0, initial_checkpoint=None,
+    )
+    run = build_signal_attr_focused_run(crops, tmp_path / "run", augment=augment, **options)
+    keys = next(iter(run.trainer.sampler))
+    assert torch.equal(run.train_loader.dataset[keys[0]]["image"], run.train_loader.dataset[keys[0]]["image"])
+    assert run.trainer.fit(run.train_loader, max_steps=1, planned_steps=2)["global_step"] == 1
+    metrics = run.evaluate()
+    assert set(metrics["by_state_group"]) == {"pedestrian:red"}
+    assert set(metrics["by_short_side"]) == {"16to32px"}
+    run.trainer.update_best(metrics["macro_state_f1"])
+    published = run.publish_checkpoint(tmp_path / "best_signal_attr.pt")
+    assert load_signal_attr_classifier_checkpoint(published)["payload"]["augment"]["enabled"] is True
+
+    with pytest.raises(ValueError, match="augmentation differs"):
+        build_signal_attr_focused_run(crops, tmp_path / "run", resume=True, **options)
+    resumed = build_signal_attr_focused_run(crops, tmp_path / "run", resume=True, augment=augment, **options)
+    assert resumed.trainer.global_step == 1
+
+
+def test_sqrt_sampling_weights_groups_by_square_root(tmp_path: Path) -> None:
+    crops = _materialized_crops(tmp_path)
+    run = build_signal_attr_focused_run(
+        crops, tmp_path / "run", logical_batch_size=2, microbatch_size=1, sampling="sqrt",
+        device="cpu", precision="fp32", num_workers=0, initial_checkpoint=None,
+    )
+    weights = {source.name: source.weight for source in run.train_loader.dataset.sources}
+    assert weights == {key: count ** 0.5 for key, count in run.group_counts.items()}
+
+
+def test_wider_deeper_model_trains_from_scratch_and_reloads(tmp_path: Path) -> None:
+    crops = _materialized_crops(tmp_path)
+    options = dict(logical_batch_size=2, microbatch_size=1, sampling="balanced",
+                   device="cpu", precision="fp32", num_workers=0)
+    with pytest.raises(ValueError, match="omit the initial checkpoint"):
+        build_signal_attr_focused_run(crops, tmp_path / "bad", width=48,
+                                      initial_checkpoint=Path("models/signal_attr/best_signal_attr.pt"), **options)
+    run = build_signal_attr_focused_run(crops, tmp_path / "run", width=16, blocks_per_stage=2,
+                                        initial_checkpoint=None, **options)
+    run.trainer.fit(run.train_loader, max_steps=1, planned_steps=1)
+    run.trainer.update_best(run.evaluate()["macro_state_f1"])
+    loaded = load_signal_attr_classifier_checkpoint(run.publish_checkpoint(tmp_path / "best.pt"))
+    assert (loaded["model_config"].width, loaded["model_config"].blocks_per_stage) == (16, 2)
+
+
+def test_cosine_schedule_decays_and_resumes(tmp_path: Path) -> None:
+    crops = _materialized_crops(tmp_path)
+    options = dict(logical_batch_size=2, microbatch_size=1, sampling="balanced", device="cpu",
+                   precision="fp32", num_workers=0, initial_checkpoint=None,
+                   lr_schedule="cosine", planned_steps=4)
+    run = build_signal_attr_focused_run(crops, tmp_path / "run", **options)
+    run.trainer.fit(run.train_loader, max_steps=2, planned_steps=4)
+    assert run.trainer.optimizer.param_groups[0]["lr"] == pytest.approx(0.5e-3)
+    resumed = build_signal_attr_focused_run(crops, tmp_path / "run", resume=True, **options)
+    assert resumed.trainer.optimizer.param_groups[0]["lr"] == pytest.approx(0.5e-3)

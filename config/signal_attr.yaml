@@ -25,7 +25,25 @@ train:
   sampling: balanced
   selection_metric: macro_state_f1
   learning_rate: 0.001
+  lr_schedule: constant
   weight_decay: 0.0001
   arrow_loss_weight: 1.0
   checkpoint_interval_sec: 600
   initial_checkpoint: models/signal_attr/best_signal_attr.pt
+  # 학습 crop에만 적용한다. 좌우 반전과 hue 변경은 라벨과 어긋나므로 넣지 않는다.
+  # 대조 실행은 train 명령에 --no-augment를 준다.
+  augment:
+    enabled: true
+    jitter_prob: 0.5
+    jitter_scale: [0.9, 1.1]
+    jitter_shift: 0.08
+    photometric_prob: 0.5
+    brightness: 0.25
+    contrast: 0.25
+    saturation: 0.2
+    lowres_prob: 0.5
+    lowres_min_short_side_px: 8
+    blur_prob: 0.3
+    blur_radius_px: [0.3, 0.8]
+    jpeg_prob: 0.3
+    jpeg_quality: [50, 90]

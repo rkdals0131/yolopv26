@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, replace
 import os
 from pathlib import Path
+import random
 import shutil
 import tempfile
 from types import SimpleNamespace
@@ -18,6 +19,7 @@ from common.io import read_json
 from model.data.dataset import LogicalBatchSampler
 from model.engine.trainer import FocusedTrainer, FocusedTrainerConfig, _atomic_save, _fsync_directory
 
+from .augment import SignalAttrAugmentConfig, augment_signal_attr_crop, signal_attr_augment_config_to_dict
 from .classifier import (
     BASE_COLORS,
     SignalAttrClassifierConfig,
@@ -74,9 +76,12 @@ class SignalAttrCriterion(nn.Module):
 
 class _SampledCropDataset(SignalAttrCropTorchDataset):
     def __init__(self, dataset_root: Path, *, split: str, input_size: int, normalization: str,
-                 labels_root: Path, sampling: str) -> None:
+                 labels_root: Path, sampling: str, augment: SignalAttrAugmentConfig | None = None,
+                 seed: int = 0) -> None:
         super().__init__(dataset_root, split=split, input_size=input_size,
                          normalization=normalization, labels_root=labels_root)
+        self.augment = augment
+        self.seed = int(seed)
         groups: dict[str, list[int]] = {}
         for index, row in enumerate(self.rows):
             light_type = str(row.get("light_type") or "")
@@ -86,16 +91,29 @@ class _SampledCropDataset(SignalAttrCropTorchDataset):
             key = f"{light_type}:{color}:left={int(row['arrow'])}" if light_type == "car" else f"{light_type}:{color}"
             groups.setdefault(key, []).append(index)
         self.group_counts = dict(sorted((key, len(indices)) for key, indices in groups.items()))
-        if sampling == "balanced":
-            self.sources = tuple(SimpleNamespace(name=key, weight=1.0) for key in sorted(groups))
+        if sampling in ("balanced", "sqrt"):
+            # sqrt draws each crop in proportion to 1/sqrt(group size): between natural and balanced.
+            self.sources = tuple(
+                SimpleNamespace(name=key, weight=1.0 if sampling == "balanced" else len(groups[key]) ** 0.5)
+                for key in sorted(groups)
+            )
             self.indices_by_source = {key: tuple(groups[key]) for key in sorted(groups)}
         else:
             self.sources = (SimpleNamespace(name="signal_attr", weight=1.0),)
             self.indices_by_source = {"signal_attr": tuple(range(len(self)))}
 
     def __getitem__(self, index: int | tuple[int, int]) -> dict[str, Any]:
-        sample_index = index[0] if isinstance(index, tuple) else index
-        return super().__getitem__(sample_index)
+        if not isinstance(index, tuple):
+            return self._load_item(index)
+        sample_index, draw_id = index
+        if self.augment is None:
+            return self._load_item(sample_index)
+        # Seeded by draw position, so a resumed run repeats the same augmentation.
+        rng = random.Random((self.seed << 32) + int(draw_id))
+        augment = self.augment
+        return self._load_item(
+            sample_index, lambda image, row: augment_signal_attr_crop(image, row.get("crop_box"), rng, augment)
+        )
 
 
 @dataclass
@@ -143,6 +161,7 @@ class SignalAttrFocusedRun:
             "state_semantics": "left_arrow",
             "all_off_is_valid": bool(metadata["all_off_is_valid"]),
             "sampling": str(metadata.get("sampling", "natural")),
+            "augment": dict(metadata.get("augment", {"enabled": False})),
             "global_step": selected_step,
         }
         path = Path(output_path)
@@ -201,9 +220,20 @@ def build_signal_attr_focused_run(
     checkpoint_interval_sec: float = 600.0,
     resume: bool = False,
     sampling: str = "natural",
+    augment: SignalAttrAugmentConfig | None = None,
+    width: int | None = None,
+    blocks_per_stage: int | None = None,
+    lr_schedule: str = "constant",
+    planned_steps: int | None = None,
 ) -> SignalAttrFocusedRun:
-    if sampling not in ("natural", "balanced"):
+    if sampling not in ("natural", "balanced", "sqrt"):
         raise ValueError(f"unsupported SignalAttr sampling: {sampling}")
+    if lr_schedule not in ("constant", "cosine"):
+        raise ValueError(f"unsupported SignalAttr lr_schedule: {lr_schedule}")
+    if lr_schedule == "cosine" and not planned_steps:
+        raise ValueError("cosine lr_schedule needs planned_steps")
+    if initial_checkpoint is not None and (width is not None or blocks_per_stage is not None):
+        raise ValueError("SignalAttr width/blocks_per_stage start a new model; omit the initial checkpoint")
     root = Path(dataset_root)
     output = Path(output_root)
     latest = output / "checkpoints" / "latest.pt"
@@ -222,11 +252,19 @@ def build_signal_attr_focused_run(
         saved_sampling = str(resumed_checkpoint["run_metadata"].get("sampling", "natural"))
         if sampling != saved_sampling:
             raise ValueError(f"SignalAttr sampling differs from saved run: {saved_sampling}")
+        saved_augment = resumed_checkpoint["run_metadata"].get("augment", {"enabled": False})
+        if signal_attr_augment_config_to_dict(augment) != saved_augment:
+            raise ValueError(f"SignalAttr augmentation differs from saved run: {saved_augment}")
         model_config = SignalAttrClassifierConfig(**resumed_checkpoint["model_config"])
         model = SignalAttrCropClassifier(model_config)
         policy = SignalAttrThresholdPolicy(**resumed_checkpoint["run_metadata"]["threshold_policy"])
     elif initial_checkpoint is None:
-        model_config = SignalAttrClassifierConfig(input_size=int(crop_config["input_size"]))
+        defaults = SignalAttrClassifierConfig()
+        model_config = SignalAttrClassifierConfig(
+            input_size=int(crop_config["input_size"]),
+            width=defaults.width if width is None else int(width),
+            blocks_per_stage=defaults.blocks_per_stage if blocks_per_stage is None else int(blocks_per_stage),
+        )
         model = SignalAttrCropClassifier(model_config)
         policy = SignalAttrThresholdPolicy()
     else:
@@ -238,6 +276,7 @@ def build_signal_attr_focused_run(
     train_dataset = _SampledCropDataset(
         root, split="train", input_size=int(crop_config["input_size"]),
         normalization=str(crop_config["normalization"]), labels_root=snapshot, sampling=sampling,
+        augment=augment, seed=seed,
     )
     val_dataset = SignalAttrCropTorchDataset(
         root, split="val", input_size=int(crop_config["input_size"]),
@@ -254,11 +293,13 @@ def build_signal_attr_focused_run(
     )
     model = model.to(torch.device(device))
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+    scheduler = (torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=int(planned_steps))
+                 if lr_schedule == "cosine" else None)
     trainer = FocusedTrainer(
         model,
         SignalAttrCriterion(arrow_loss_weight=arrow_loss_weight),
         optimizer,
-        scheduler=None,
+        scheduler=scheduler,
         sampler=sampler,
         config=FocusedTrainerConfig(
             output_dir=output, device=device, precision=precision,
@@ -275,6 +316,8 @@ def build_signal_attr_focused_run(
             "threshold_policy": asdict(policy),
             "sampling": sampling,
             "sampling_group_counts": train_dataset.group_counts,
+            "augment": signal_attr_augment_config_to_dict(augment),
+            "lr_schedule": lr_schedule,
         },
     )
     if has_checkpoint:

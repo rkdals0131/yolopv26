@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 import math
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from PIL import Image
 import torch
@@ -26,6 +26,8 @@ class SignalAttrClassifierConfig:
     input_size: int = 128
     width: int = 24
     dropout: float = 0.10
+    # Extra stride-1 convolutions after each downsampling block; 1 keeps the original layout.
+    blocks_per_stage: int = 1
 
 
 @dataclass(frozen=True)
@@ -63,14 +65,16 @@ class SignalAttrCropClassifier(nn.Module):
         super().__init__()
         self.config = config or SignalAttrClassifierConfig()
         width = int(self.config.width)
-        if width <= 0:
-            raise ValueError("classifier width must be > 0")
+        blocks = int(self.config.blocks_per_stage)
+        if width <= 0 or blocks <= 0:
+            raise ValueError("classifier width and blocks_per_stage must be > 0")
         dropout = float(self.config.dropout)
+        layers: list[nn.Module] = []
+        for in_channels, out_channels in ((3, width), (width, width * 2), (width * 2, width * 4), (width * 4, width * 4)):
+            layers.append(_conv_block(in_channels, out_channels, stride=2))
+            layers.extend(_conv_block(out_channels, out_channels, stride=1) for _ in range(blocks - 1))
         self.backbone = nn.Sequential(
-            _conv_block(3, width, stride=2),
-            _conv_block(width, width * 2, stride=2),
-            _conv_block(width * 2, width * 4, stride=2),
-            _conv_block(width * 4, width * 4, stride=2),
+            *layers,
             nn.AdaptiveAvgPool2d((1, 1)),
             nn.Flatten(),
             nn.Dropout(p=max(0.0, min(dropout, 0.9))),
@@ -133,8 +137,15 @@ class SignalAttrCropTorchDataset(Dataset):
         return len(self.rows)
 
     def __getitem__(self, index: int) -> dict[str, Any]:
+        return self._load_item(index)
+
+    def _load_item(
+        self, index: int, prepare: Callable[[Image.Image, Mapping[str, Any]], Image.Image] | None = None,
+    ) -> dict[str, Any]:
         row = self.rows[index]
         with Image.open(self.dataset_root / row["crop_path"]) as image:
+            if prepare is not None:
+                image = prepare(image, row)
             tensor = signal_attr_crop_image_to_tensor(
                 image, input_size=self.input_size, normalization=self.normalization
             )
@@ -278,6 +289,24 @@ def _binary_metrics(stats: Mapping[str, int]) -> dict[str, float | int]:
     }
 
 
+# Source-image short side of the labelled box, to see whether distant lights improve.
+_SHORT_SIDE_BINS = ((8.0, "lt8px"), (16.0, "8to16px"), (32.0, "16to32px"), (math.inf, "ge32px"))
+
+
+def _short_side_bin(row: Mapping[str, Any]) -> str:
+    box = row.get("clipped_box") or row.get("bbox")
+    if not isinstance(box, (list, tuple)) or len(box) != 4:
+        return "unknown"
+    short = min(float(box[2]) - float(box[0]), float(box[3]) - float(box[1]))
+    return next(name for limit, name in _SHORT_SIDE_BINS if short < limit)
+
+
+def _state_group(row: Mapping[str, Any]) -> str:
+    if str(row["light_type"]) == "car":
+        return f"car:{row['base_color']}:left={int(row['arrow'])}"
+    return f"pedestrian:{row['base_color']}"
+
+
 @torch.no_grad()
 def evaluate_signal_attr_classifier(
     model: nn.Module, loader: Any, *, device: torch.device,
@@ -296,6 +325,8 @@ def evaluate_signal_attr_classifier(
     }
     type_counts = {kind: {"sample_count": 0, "valid_count": 0} for kind in states}
     base_correct = arrow_correct = arrow_count = combo_correct = sample_count = 0
+    # Exact color+arrow match and valid readout, per state group and per object size.
+    slices: dict[str, dict[str, dict[str, int]]] = {"by_state_group": {}, "by_short_side": {}}
     for batch in loader:
         images = batch["image"].to(device=device)
         outputs = model(images)
@@ -309,15 +340,21 @@ def evaluate_signal_attr_classifier(
             if kind == "car":
                 arrow_correct += int(int(arrow_pred[index]) == truth_arrow)
                 arrow_count += 1
-            combo_correct += int(
+            combo_hit = int(
                 int(base_pred[index]) == BASE_COLOR_TO_INDEX[truth_color]
                 and (kind != "car" or int(arrow_pred[index]) == truth_arrow)
             )
+            combo_correct += combo_hit
             sample_count += 1
             prediction = product_signal_attr_prediction_from_logits(
                 outputs["base_color_logits"][index], outputs["arrow_logit"][index],
                 light_type=kind, all_off_is_valid=all_off_is_valid, policy=threshold_policy,
             )
+            for family, key in (("by_state_group", _state_group(row)), ("by_short_side", _short_side_bin(row))):
+                counts = slices[family].setdefault(key, {"sample_count": 0, "combo_correct": 0, "valid_count": 0})
+                counts["sample_count"] += 1
+                counts["combo_correct"] += combo_hit
+                counts["valid_count"] += int(prediction.tl_attr_valid)
             type_counts[kind]["sample_count"] += 1
             type_counts[kind]["valid_count"] += int(prediction.tl_attr_valid)
             for name, bit in states[kind].items():
@@ -345,6 +382,14 @@ def evaluate_signal_attr_classifier(
         "valid_coverage": sum(item["valid_count"] for item in type_counts.values()) / max(sample_count, 1),
         "macro_state_f1": sum(macro_terms) / len(macro_terms) if macro_terms else 0.0,
         "by_light_type": by_light_type,
+        **{
+            family: {
+                key: {**counts, "combo_accuracy": counts["combo_correct"] / max(counts["sample_count"], 1),
+                      "valid_coverage": counts["valid_count"] / max(counts["sample_count"], 1)}
+                for key, counts in sorted(groups.items())
+            }
+            for family, groups in slices.items()
+        },
     }
 
 

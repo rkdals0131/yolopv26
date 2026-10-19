@@ -18,7 +18,10 @@ import yaml
 from common.io import atomic_write_json, read_json, write_json
 from common.paths import REPO_ROOT
 from common.train_runtime import training_run_lock
-from model.signal_attr.classifier import signal_attr_collate
+from model.signal_attr.augment import signal_attr_augment_config_from_mapping, signal_attr_augment_config_to_dict
+from model.signal_attr.classifier import (
+    evaluate_signal_attr_classifier, load_signal_attr_classifier_checkpoint, signal_attr_collate,
+)
 from model.signal_attr.crop import SignalAttrCropConfig
 from model.signal_attr.training import build_signal_attr_focused_run
 from model.signal_attr.dataset import materialize_product_signal_attr_crop_dataset_from_root
@@ -36,6 +39,8 @@ _LEGACY_RESUME_DEFAULTS = {
     "arrow_loss_weight": 1.0,
     "checkpoint_interval_sec": 600.0,
     "log_every": 20,
+    "augment": {"enabled": False},
+    "lr_schedule": "constant",
 }
 
 
@@ -70,7 +75,13 @@ def _train_locked(args: argparse.Namespace, parser: argparse.ArgumentParser, out
             raise FileExistsError(f"run artifacts already exist; use a new output directory: {output}")
         defaults = _settings(getattr(args, "config", DEFAULT_CONFIG))["train"]
         configured_initial = defaults.get("initial_checkpoint")
-        initial = _override(args, "initial_checkpoint", configured_initial)
+        width = getattr(args, "width", None)
+        blocks_per_stage = getattr(args, "blocks_per_stage", None)
+        if (width is not None or blocks_per_stage is not None) and args.initial_checkpoint is not None:
+            parser.error("--width/--blocks-per-stage train a new model; omit --initial-checkpoint")
+        # A different architecture cannot load the configured initial weights, so it starts from scratch.
+        initial = None if width is not None or blocks_per_stage is not None else _override(
+            args, "initial_checkpoint", configured_initial)
         cfg = {
             "dataset": str(_path(args.dataset)),
             "precision": _override(args, "precision", defaults["precision"]),
@@ -85,11 +96,17 @@ def _train_locked(args: argparse.Namespace, parser: argparse.ArgumentParser, out
             "device": _override(args, "device", defaults["device"]),
             "num_workers": int(_override(args, "num_workers", defaults["num_workers"])),
             "learning_rate": float(defaults["learning_rate"]),
+            "lr_schedule": _override(args, "lr_schedule", defaults.get("lr_schedule", "constant")),
             "weight_decay": float(defaults["weight_decay"]),
             "arrow_loss_weight": float(defaults["arrow_loss_weight"]),
             "checkpoint_interval_sec": float(defaults["checkpoint_interval_sec"]),
             "log_every": int(defaults["log_every"]),
             "initial_checkpoint": str(_path(initial)) if initial is not None else None,
+            "model_width": width,
+            "model_blocks_per_stage": blocks_per_stage,
+            # Saved with every default filled in, so a later default change cannot alter a resume.
+            "augment": signal_attr_augment_config_to_dict(signal_attr_augment_config_from_mapping(
+                {"enabled": False} if getattr(args, "no_augment", False) else defaults.get("augment"))),
         }
         atomic_write_json(output / "signal_config.json", cfg)
     torch.manual_seed(cfg["seed"])
@@ -105,9 +122,13 @@ def _train_locked(args: argparse.Namespace, parser: argparse.ArgumentParser, out
         learning_rate=float(cfg["learning_rate"]), weight_decay=float(cfg["weight_decay"]),
         arrow_loss_weight=float(cfg["arrow_loss_weight"]),
         checkpoint_interval_sec=float(cfg["checkpoint_interval_sec"]),
+        augment=signal_attr_augment_config_from_mapping(cfg["augment"]),
+        width=cfg.get("model_width"), blocks_per_stage=cfg.get("model_blocks_per_stage"),
+        lr_schedule=cfg["lr_schedule"], planned_steps=cfg["max_steps"],
         resume=bool(args.resume_run))
     if args.resume_run and getattr(args, "microbatch_size", None) is not None:
         run.trainer.microbatch_size = runtime_microbatch
+    full_val_loader = run.val_loader
     total = len(run.val_loader.dataset)
     budget = int(cfg["validation_samples"])
     indices = np.linspace(0, total - 1, min(total, budget) if budget > 0 else total, dtype=int).tolist()
@@ -141,6 +162,16 @@ def _train_locked(args: argparse.Namespace, parser: argparse.ArgumentParser, out
             validate()
             result["signal_checkpoint"] = str(run.publish_checkpoint(output / "best_signal_attr.pt"))
             result["best_weights"] = str(run.trainer.best_path)
+            # Periodic validation reads a subset; rare states such as red+left need the full split.
+            loaded = load_signal_attr_classifier_checkpoint(Path(result["signal_checkpoint"]), device=runtime_device)
+            full = evaluate_signal_attr_classifier(
+                loaded["model"], full_val_loader, device=loaded["device"],
+                threshold_policy=loaded["threshold_policy"], all_off_is_valid=run.all_off_is_valid,
+            )
+            full["checkpoint"] = result["signal_checkpoint"]
+            write_json(output / "validation_full_best.json", full, ensure_ascii=False)
+            result["validation_full_best"] = {key: full[key] for key in ("sample_count", "macro_state_f1",
+                                              "combo_accuracy", "valid_coverage")}
         result["validation"] = latest_metrics
         result["run_dir"] = str(output)
         write_json(output / "summary.json", result, ensure_ascii=False)
@@ -148,6 +179,7 @@ def _train_locked(args: argparse.Namespace, parser: argparse.ArgumentParser, out
     finally:
         _stop_loader(run.train_loader)
         _stop_loader(run.val_loader)
+        _stop_loader(full_val_loader)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -180,7 +212,12 @@ def main(argv: list[str] | None = None) -> None:
     train.add_argument("--validation-every", type=int)
     train.add_argument("--validation-samples", type=int)
     train.add_argument("--initial-checkpoint", type=Path)
-    train.add_argument("--sampling", choices=("balanced", "natural"))
+    train.add_argument("--sampling", choices=("balanced", "sqrt", "natural"))
+    train.add_argument("--lr-schedule", choices=("constant", "cosine"))
+    train.add_argument("--width", type=int, help="New model width; trains from scratch.")
+    train.add_argument("--blocks-per-stage", type=int, help="New model depth per stage; trains from scratch.")
+    train.add_argument("--no-augment", action="store_true",
+                       help="Disable the config's train.augment for a new run (control run).")
     args = parser.parse_args(argv)
     if args.command == "train" and args.steps is not None and args.steps <= 0:
         parser.error("--steps must be positive")
